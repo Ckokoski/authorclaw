@@ -4,11 +4,30 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen.svg)](https://nodejs.org)
-[![Security](https://img.shields.io/badge/security-hardened-green.svg)](docs/SECURITY.md)
+[![Security](https://img.shields.io/badge/security-hardened-green.svg)](#security)
 
-AuthorClaw is a security-hardened fork of [OpenClaw](https://github.com/openclaw/openclaw), purpose-built for fiction and nonfiction authors. Tell it what you want — it figures out the steps, picks the right skills and tools, and executes autonomously.
+AuthorClaw is a security-hardened AI agent purpose-built for fiction and nonfiction authors. Yes, it can write entire books — but that's just the beginning.
 
-> **"I told the agent to write me a book. It planned the steps, picked the skills, and just went and did it."**
+**AuthorClaw automates the boring stuff so you can focus on the creative stuff.** It handles book research, marketing competition analysis, file management, beta reading, copy editing, revision assistance, book bible building, story consistency checking, query letter drafting, literary agent research, ad copy generation, email list strategy, and more — all autonomously.
+
+Tell it what you want. It figures out the steps, picks the right skills and tools, and executes.
+
+> **"It's not just a writing tool. It's a writing partner, research assistant, editor, and marketing team rolled into one."**
+
+---
+
+## What Can It Do?
+
+- **Write** — Draft scenes, chapters, and full manuscripts in your voice
+- **Research** — Deep dives into genres, markets, historical periods, craft techniques
+- **Revise** — Structural editing, pacing analysis, style consistency checks
+- **Plan** — Outlines, beat sheets, series bibles, character arcs, world-building
+- **Beta Read** — First-reader feedback with specific, actionable notes
+- **Market** — Blurbs, ad copy, email sequences, social media content
+- **Analyze** — Voice profiling (47 markers), pacing heatmaps, tension mapping
+- **Format** — Export manuscripts to agent-ready DOCX, KDP PDF, EPUB, Markdown
+- **Manage** — Track projects, word counts, goals, deadlines
+- **Ingest Tools** — Read source code of any tool and create a new skill from it
 
 ---
 
@@ -243,6 +262,44 @@ AuthorClaw inherits MoatBot-grade security:
 - **Rate Limiting**: Per-channel rate limits
 - **Research Gate**: 38 whitelisted domains for internet access
 - **Localhost Only**: Server binds to 127.0.0.1 (no external access)
+
+---
+
+## Setup Wizard
+
+For a guided setup experience, run the interactive wizard:
+
+```bash
+bash scripts/setup-wizard.sh
+```
+
+It walks you through everything: OS detection, Node.js installation, Ollama setup, API key configuration, vault passphrase creation, and personalization (genre, word goals). It even generates a troubleshooting prompt you can paste into any AI chatbot if you get stuck.
+
+---
+
+## Contributing
+
+AuthorClaw is open source and contributions are welcome! Whether you're an author with ideas for new skills, a developer who wants to improve the codebase, or a tinkerer who built a cool integration — we'd love your help.
+
+### Ways to Contribute
+
+- **New Skills** — Create SKILL.md files for writing tasks we haven't covered yet
+- **Bug Fixes** — Find and fix issues in the gateway, dashboard, or bridges
+- **New AI Providers** — Add support for additional AI services
+- **New Bridges** — Build integrations for Slack, WhatsApp, Matrix, etc.
+- **Dashboard Improvements** — The dashboard is a single HTML file — lots of room to grow
+- **Documentation** — Better guides, tutorials, and examples
+- **Author OS Tools** — Build new writing tools that integrate via the Author OS service
+
+### How to Contribute
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-new-skill`)
+3. Make your changes
+4. Test locally (`npx tsx gateway/src/index.ts`)
+5. Submit a Pull Request with a clear description
+
+For new skills, just create a folder in `skills/author/` (or `skills/marketing/`, `skills/core/`) with a `SKILL.md` file following the existing format (YAML frontmatter + markdown body).
 
 ---
 
