@@ -38,6 +38,11 @@ let STATE_FILE = join(OUTPUT_DIR, '.conductor-state.json');
 let LOG_FILE = join(OUTPUT_DIR, '.youtube', 'directors-log.jsonl');
 let ACTIVE_MODEL = 'Unknown';
 
+// Configurable via dashboard project config or conductor/launch API
+let TOTAL_CHAPTERS = 25;
+let TARGET_CHAPTER_WC = 3000;
+let ESTIMATED_TOTAL_WC = 80000; // Auto-calculated from chapters × target WC
+
 // ═══════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════
@@ -205,7 +210,7 @@ async function updateDashboard(phase: string, step: string, extra: any = {}): Pr
         progress: {
           wordCount: state.wordCount,
           chaptersComplete: state.chaptersComplete,
-          totalChapters: 25,
+          totalChapters: TOTAL_CHAPTERS,
           currentChapter: extra.currentChapter || 0,
           cost: 0,
           elapsedMs: Date.now() - startTime,
@@ -452,35 +457,43 @@ async function phase3_outline(): Promise<void> {
   await updateDashboard('Phase 3: Outline', 'Creating chapter outline...');
 
   if (!isCompleted('outline-structure')) {
-    print('    [1/2] Creating 25-chapter outline...');
+    print(`    [1/2] Creating ${TOTAL_CHAPTERS}-chapter outline...`);
+    // Calculate structural beats based on chapter count
+    const setupEnd = Math.max(1, Math.round(TOTAL_CHAPTERS * 0.12));
+    const incitingEnd = Math.max(setupEnd + 1, Math.round(TOTAL_CHAPTERS * 0.20));
+    const midpoint = Math.round(TOTAL_CHAPTERS * 0.50);
+    const twist75 = Math.round(TOTAL_CHAPTERS * 0.75);
+    const climaxStart = twist75 + 1;
+    const climaxEnd = TOTAL_CHAPTERS - 1;
     let response = await chat(
-      `Using the outline skill with a Thriller High-Tension Architecture, create a 25-chapter outline for the ${PROJECT_NAME} novel.\n\n` +
-      `For each chapter provide:\n- Chapter number and title\n- POV character (usually Kai, occasionally the security analyst)\n` +
+      `Using the outline skill, create a ${TOTAL_CHAPTERS}-chapter outline for the ${PROJECT_NAME} novel.\n\n` +
+      `For each chapter provide:\n- Chapter number and title\n- POV character\n` +
       `- Primary location\n- 3-5 key beats (what happens)\n- Tension level (1-10)\n- Chapter ending hook\n\n` +
-      `The structure should follow:\n- Chapters 1-3: Setup, introduce Kai's world, the shadow IT\n` +
-      `- Chapter 4-5: Inciting incident — OmegaClaw escapes\n- Chapters 6-12: Rising action, escalating threats\n` +
-      `- Chapter 13: Midpoint twist\n- Chapters 14-19: Complications multiply, allies and enemies\n` +
-      `- Chapter 20: 75% twist / all is lost moment\n- Chapters 21-24: Climax sequence\n- Chapter 25: Resolution\n\n` +
-      `You MUST include ALL 25 chapters. Do NOT stop early. Number every chapter from 1 to 25.\n` +
+      `The structure should follow:\n- Chapters 1-${setupEnd}: Setup, introduce the world\n` +
+      `- Chapters ${setupEnd + 1}-${incitingEnd}: Inciting incident\n- Chapters ${incitingEnd + 1}-${midpoint - 1}: Rising action, escalating threats\n` +
+      `- Chapter ${midpoint}: Midpoint twist\n- Chapters ${midpoint + 1}-${twist75 - 1}: Complications multiply\n` +
+      `- Chapter ${twist75}: 75% twist / all is lost moment\n- Chapters ${climaxStart}-${climaxEnd}: Climax sequence\n- Chapter ${TOTAL_CHAPTERS}: Resolution\n\n` +
+      `You MUST include ALL ${TOTAL_CHAPTERS} chapters. Do NOT stop early. Number every chapter from 1 to ${TOTAL_CHAPTERS}.\n` +
       `Reference the Book Bible characters, locations, and timeline for consistency.`,
       MAX_RETRIES,
       MIN_CONTENT_LENGTH
     );
 
-    // Check if outline was truncated — does it contain chapter 25?
-    const hasChapter25 = /chapter\s+25/i.test(response);
+    // Check if outline was truncated — does it contain the last chapter?
+    const hasLastChapter = new RegExp(`chapter\\s+${TOTAL_CHAPTERS}`, 'i').test(response);
     const chapterMatches = response.match(/chapter\s+\d+/gi) || [];
     const uniqueChapters = new Set(chapterMatches.map(m => m.replace(/\D/g, '')));
+    const minExpected = Math.round(TOTAL_CHAPTERS * 0.8);
 
-    if (!hasChapter25 || uniqueChapters.size < 20) {
-      print(`    [truncated] Outline appears incomplete (found ${uniqueChapters.size} chapters, missing chapter 25: ${!hasChapter25}). Requesting continuation...`);
+    if (!hasLastChapter || uniqueChapters.size < minExpected) {
+      print(`    [truncated] Outline appears incomplete (found ${uniqueChapters.size} chapters, missing chapter ${TOTAL_CHAPTERS}: ${!hasLastChapter}). Requesting continuation...`);
       // Figure out the last chapter mentioned
       const lastChapterNum = Math.max(...[...uniqueChapters].map(Number).filter(n => !isNaN(n)), 0);
       const continuation = await chat(
-        `Your outline was cut off. You got through chapter ${lastChapterNum} but I need ALL 25 chapters.\n` +
-        `Continue the ${PROJECT_NAME} outline starting from chapter ${lastChapterNum + 1} through chapter 25.\n` +
+        `Your outline was cut off. You got through chapter ${lastChapterNum} but I need ALL ${TOTAL_CHAPTERS} chapters.\n` +
+        `Continue the ${PROJECT_NAME} outline starting from chapter ${lastChapterNum + 1} through chapter ${TOTAL_CHAPTERS}.\n` +
         `Use the same format: chapter number, title, POV, location, beats, tension level, ending hook.\n` +
-        `Make sure you write chapter 25 (Resolution).`,
+        `Make sure you write chapter ${TOTAL_CHAPTERS} (Resolution).`,
         MAX_RETRIES,
         MIN_CONTENT_LENGTH
       );
@@ -489,7 +502,7 @@ async function phase3_outline(): Promise<void> {
     }
 
     state.outline = response;
-    await validateAndSave('outline/full-outline.md', `# ${PROJECT_NAME} -- 25-Chapter Outline\n\n${response}`, 'outline-structure');
+    await validateAndSave('outline/full-outline.md', `# ${PROJECT_NAME} -- ${TOTAL_CHAPTERS}-Chapter Outline\n\n${response}`, 'outline-structure');
     print(`    [ok] Full outline created (${response.length} chars)`);
     await completeStep('outline-structure');
     await sleep(DELAY_MS);
@@ -498,18 +511,18 @@ async function phase3_outline(): Promise<void> {
   if (!isCompleted('outline-scenes')) {
     print('    [2/2] Expanding into scene breakdowns...');
     const response = await chat(
-      `Now expand the 25-chapter outline into detailed scene-by-scene breakdowns.\n` +
+      `Now expand the ${TOTAL_CHAPTERS}-chapter outline into detailed scene-by-scene breakdowns.\n` +
       `For each chapter, list 2-4 scenes with:\n- Scene goal and conflict\n- Key dialogue moments or reveals\n` +
       `- Emotional beats\n- Estimated word count per scene\n\n` +
-      `Focus especially on:\n- The inciting incident scenes (chapter 4-5)\n- The midpoint twist (chapter 13)\n` +
-      `- The climax sequence (chapters 21-24)\n\nKeep the total target at 3,000-4,000 words per chapter.`,
+      `Focus especially on:\n- The inciting incident scenes\n- The midpoint twist (chapter ${midpoint})\n` +
+      `- The climax sequence (chapters ${climaxStart}-${climaxEnd})\n\nKeep the total target at ~${TARGET_CHAPTER_WC.toLocaleString()} words per chapter.`,
       MAX_RETRIES,
       MIN_CONTENT_LENGTH
     );
     await validateAndSave('outline/scene-breakdowns.md', `# ${PROJECT_NAME} -- Scene Breakdowns\n\n${response}`, 'outline-scenes');
     print(`    [ok] Scene breakdowns complete (${response.length} chars)`);
     await completeStep('outline-scenes');
-    await log('Phase 3', 'Outline Complete', '25 chapters mapped with scene-by-scene breakdowns. The story architecture is locked.');
+    await log('Phase 3', 'Outline Complete', `${TOTAL_CHAPTERS} chapters mapped with scene-by-scene breakdowns. The story architecture is locked.`);
     await sleep(DELAY_MS);
   }
 
@@ -521,12 +534,12 @@ async function phase3_outline(): Promise<void> {
       titles.push(m[2].trim());
     }
     // Fallback if regex didn't match
-    if (titles.length < 25) {
-      for (let i = titles.length + 1; i <= 25; i++) {
+    if (titles.length < TOTAL_CHAPTERS) {
+      for (let i = titles.length + 1; i <= TOTAL_CHAPTERS; i++) {
         titles.push(`Chapter ${i}`);
       }
     }
-    state.chapterTitles = titles.slice(0, 25);
+    state.chapterTitles = titles.slice(0, TOTAL_CHAPTERS);
     await saveState();
   }
 
@@ -537,14 +550,14 @@ async function phase4_writing(): Promise<void> {
   print('');
   print('  >> Phase 4: Writing Chapters');
 
-  for (let ch = 1; ch <= 25; ch++) {
+  for (let ch = 1; ch <= TOTAL_CHAPTERS; ch++) {
     const stepId = `chapter-${ch}-draft`;
     if (isCompleted(stepId)) continue;
 
     const title = state.chapterTitles[ch - 1] || `Chapter ${ch}`;
     const chNum = String(ch).padStart(2, '0');
 
-    print(`    [${ch}/25] Writing: "${title}"...`);
+    print(`    [${ch}/${TOTAL_CHAPTERS}] Writing: "${title}"...`);
     await updateDashboard('Phase 4: Writing', `Writing Chapter ${ch}: "${title}"`, { currentChapter: ch });
 
     const response = await chat(
@@ -552,13 +565,13 @@ async function phase4_writing(): Promise<void> {
       `Instructions:\n` +
       `- Follow the outline beats for this chapter from the scene breakdowns\n` +
       `- Check the Book Bible for character consistency (names, descriptions, speech patterns)\n` +
-      `- Follow the Style Guide: third person limited on Kai, past tense\n` +
-      `- You MUST write at least 3,000 words of actual prose narrative. Target 3,000-4,000 words.\n` +
+      `- Follow the Style Guide for this project\n` +
+      `- You MUST write at least ${TARGET_CHAPTER_WC.toLocaleString()} words of actual prose narrative.\n` +
       `- Open with a hook — no throat-clearing\n` +
       `- End with a reason to turn the page\n` +
       `- Include sensory details and internal tension\n` +
       `- Write the COMPLETE chapter, not a summary or outline. This must be actual prose.\n` +
-      `- Do NOT write fewer than 3,000 words. If you feel you are running short, add more scenes, ` +
+      `- Do NOT write fewer than ${TARGET_CHAPTER_WC.toLocaleString()} words. If you feel you are running short, add more scenes, ` +
       `more dialogue, more internal monologue, more sensory detail. Every chapter must be substantial.`,
       MAX_RETRIES,
       MIN_CONTENT_LENGTH
@@ -567,8 +580,8 @@ async function phase4_writing(): Promise<void> {
     let fullChapter = response;
     let wc = countWords(response);
 
-    // If below target, request continuation(s) until we hit 3000+ words
-    const TARGET_WC = 3000;
+    // If below target, request continuation(s) until we hit target words
+    const TARGET_WC = TARGET_CHAPTER_WC;
     let continuations = 0;
     while (wc < TARGET_WC && continuations < 3) {
       continuations++;
@@ -605,21 +618,21 @@ async function phase4_writing(): Promise<void> {
   }
 
   print(`    Saved: chapters/ (${state.wordCount.toLocaleString()} total words)`);
-  await log('Phase 4', 'All chapters drafted', `First draft complete: ${state.wordCount.toLocaleString()} words across 25 chapters in ${elapsedMinutes()} minutes.`);
+  await log('Phase 4', 'All chapters drafted', `First draft complete: ${state.wordCount.toLocaleString()} words across ${TOTAL_CHAPTERS} chapters in ${elapsedMinutes()} minutes.`);
 }
 
 async function phase5_revision(): Promise<void> {
   print('');
   print('  >> Phase 5: Revision');
 
-  for (let ch = 1; ch <= 25; ch++) {
+  for (let ch = 1; ch <= TOTAL_CHAPTERS; ch++) {
     const stepId = `chapter-${ch}-revised`;
     if (isCompleted(stepId)) continue;
 
     const title = state.chapterTitles[ch - 1] || `Chapter ${ch}`;
     const chNum = String(ch).padStart(2, '0');
 
-    print(`    [${ch}/25] Revising: "${title}"...`);
+    print(`    [${ch}/${TOTAL_CHAPTERS}] Revising: "${title}"...`);
     await updateDashboard('Phase 5: Revision', `Revising Chapter ${ch}: "${title}"`, { currentChapter: ch });
 
     // Read the draft
@@ -654,7 +667,7 @@ async function phase5_revision(): Promise<void> {
   }
 
   print('    Saved: chapters/*-revised.md');
-  await log('Phase 5', 'Revision Complete', `All 25 chapters revised. Elapsed: ${elapsedMinutes()} minutes.`);
+  await log('Phase 5', 'Revision Complete', `All ${TOTAL_CHAPTERS} chapters revised. Elapsed: ${elapsedMinutes()} minutes.`);
 }
 
 async function phase6_assembly(): Promise<void> {
@@ -685,7 +698,7 @@ async function phase6_assembly(): Promise<void> {
     const bibleFileList = bibleFiles.map(f => `  - book-bible/${f}`).join('\n');
 
     const response = await chat(
-      `Run a consistency check across all 25 chapters of ${PROJECT_NAME} against the Book Bible.\n\n` +
+      `Run a consistency check across all ${TOTAL_CHAPTERS} chapters of ${PROJECT_NAME} against the Book Bible.\n\n` +
       `The Book Bible files you should check against are:\n${bibleFileList}\n\n` +
       `Specifically reference these files when checking for:\n` +
       `- Character description contradictions (check character-kai-reeves.md, character-omegaclaw.md, characters-supporting.md)\n` +
@@ -709,7 +722,7 @@ async function phase6_assembly(): Promise<void> {
     let manuscript = `# ${PROJECT_NAME}\n\nA Novel\n\n---\n\n`;
     let totalWords = 0;
 
-    for (let ch = 1; ch <= 25; ch++) {
+    for (let ch = 1; ch <= TOTAL_CHAPTERS; ch++) {
       const chNum = String(ch).padStart(2, '0');
       const revisedPath = join(OUTPUT_DIR, 'chapters', `chapter-${chNum}-revised.md`);
       const draftPath = join(OUTPUT_DIR, 'chapters', `chapter-${chNum}-draft.md`);
@@ -732,7 +745,7 @@ async function phase6_assembly(): Promise<void> {
     await saveState();
     print(`    [ok] Manuscript assembled: ${totalWords.toLocaleString()} words`);
     await completeStep('assemble');
-    await log('Phase 6', 'Assembly Complete', `Manuscript assembled: ${totalWords.toLocaleString()} words in 25 chapters.`);
+    await log('Phase 6', 'Assembly Complete', `Manuscript assembled: ${totalWords.toLocaleString()} words in ${TOTAL_CHAPTERS} chapters.`);
   }
 
   print('    Saved: manuscript-v1.md');
@@ -750,7 +763,7 @@ async function phase7_report(): Promise<void> {
     const response = await chat(
       `Generate a project completion report for the ${PROJECT_NAME} novel:\n` +
       `- Total word count: ${state.wordCount.toLocaleString()}\n` +
-      `- Number of chapters: 25\n` +
+      `- Number of chapters: ${TOTAL_CHAPTERS}\n` +
       `- Total time: ${elapsedMinutes()} minutes\n` +
       `- AI model used: ${modelForReport}\n- Total cost: $0.00\n\n` +
       `Include:\n- Your assessment of the manuscript's strengths\n- Areas for improvement\n` +
@@ -762,7 +775,7 @@ async function phase7_report(): Promise<void> {
     await validateAndSave('completion-report.md', `# ${PROJECT_NAME} -- Completion Report\n\n${response}`, 'report');
     print(`    [ok] Report generated`);
     await completeStep('report');
-    await log('Phase 7', 'Report Complete', `Pipeline finished. ${state.wordCount.toLocaleString()} words, 25 chapters, $0.00 cost, ${elapsedMinutes()} minutes.`);
+    await log('Phase 7', 'Report Complete', `Pipeline finished. ${state.wordCount.toLocaleString()} words, ${TOTAL_CHAPTERS} chapters, $0.00 cost, ${elapsedMinutes()} minutes.`);
   }
 
   print('    Saved: completion-report.md');
@@ -799,6 +812,17 @@ async function initializeConfig(): Promise<void> {
     }
   }
 
+  // Read chapter count and word count targets from config
+  if (config && config.totalChapters && Number(config.totalChapters) >= 1 && Number(config.totalChapters) <= 100) {
+    TOTAL_CHAPTERS = Number(config.totalChapters);
+    print(`  [config] Chapters: ${TOTAL_CHAPTERS}`);
+  }
+  if (config && config.targetChapterWordCount && Number(config.targetChapterWordCount) >= 500) {
+    TARGET_CHAPTER_WC = Number(config.targetChapterWordCount);
+    print(`  [config] Target words/chapter: ${TARGET_CHAPTER_WC.toLocaleString()}`);
+  }
+  ESTIMATED_TOTAL_WC = TOTAL_CHAPTERS * TARGET_CHAPTER_WC;
+
   // Build the slug and paths from the project name
   PROJECT_SLUG = slugify(PROJECT_NAME);
   OUTPUT_DIR = join(process.cwd(), 'conductor-output', PROJECT_SLUG);
@@ -822,7 +846,7 @@ async function main(): Promise<void> {
   print('  ========================================');
   print(`  Project: ${PROJECT_NAME}`);
   print(`  Model: ${ACTIVE_MODEL}`);
-  print('  Target: 25 chapters, ~80,000 words');
+  print(`  Target: ${TOTAL_CHAPTERS} chapters, ~${ESTIMATED_TOTAL_WC.toLocaleString()} words (${TARGET_CHAPTER_WC.toLocaleString()}/ch)`);
   print(`  Output: ${OUTPUT_DIR}`);
   print('  ========================================');
 
@@ -838,7 +862,7 @@ async function main(): Promise<void> {
   if (resumed) {
     print(`\n  Resuming from checkpoint: ${state.completedSteps.length} steps completed`);
     print(`    Words so far: ${state.wordCount.toLocaleString()}`);
-    print(`    Chapters: ${state.chaptersComplete}/25`);
+    print(`    Chapters: ${state.chaptersComplete}/${TOTAL_CHAPTERS}`);
   }
 
   try {
@@ -856,7 +880,7 @@ async function main(): Promise<void> {
     print('');
     print('  ========================================');
     print(`  ${PROJECT_NAME} is COMPLETE!`);
-    print(`  ${state.wordCount.toLocaleString()} words across 25 chapters`);
+    print(`  ${state.wordCount.toLocaleString()} words across ${TOTAL_CHAPTERS} chapters`);
     print(`  Model: ${ACTIVE_MODEL}`);
     print(`  Time: ${elapsed()}`);
     print(`  Output: ${OUTPUT_DIR}`);

@@ -881,17 +881,33 @@ ${sourceCode.substring(0, 15000)}
   });
 
   // Launch conductor as a child process
-  app.post('/api/conductor/launch', async (_req: Request, res: Response) => {
+  app.post('/api/conductor/launch', async (req: Request, res: Response) => {
     if (conductorProcess && conductorProcess.exitCode === null) {
       return res.status(409).json({ error: 'Conductor is already running' });
     }
 
     const { join: j } = await import('path');
     const { existsSync: ex } = await import('fs');
+    const { mkdir: mkd, writeFile: wf, readFile: rf } = await import('fs/promises');
     const scriptPath = j(baseDir, 'scripts', 'book-conductor.ts');
 
     if (!ex(scriptPath)) {
       return res.status(404).json({ error: 'Conductor script not found at ' + scriptPath });
+    }
+
+    // Save chapter/word count config if provided in the launch request
+    const { totalChapters, targetChapterWordCount, premise, projectName } = req.body || {};
+    if (totalChapters || targetChapterWordCount || premise || projectName) {
+      const configDir = j(baseDir, 'workspace', '.config');
+      await mkd(configDir, { recursive: true });
+      const configPath = j(configDir, 'project.json');
+      let existing: any = {};
+      try { existing = JSON.parse(await rf(configPath, 'utf-8')); } catch { /* new config */ }
+      if (totalChapters) existing.totalChapters = Number(totalChapters);
+      if (targetChapterWordCount) existing.targetChapterWordCount = Number(targetChapterWordCount);
+      if (premise) existing.premise = premise;
+      if (projectName) existing.projectName = projectName;
+      await wf(configPath, JSON.stringify(existing, null, 2));
     }
 
     // Reset state
