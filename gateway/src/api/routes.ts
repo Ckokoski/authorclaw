@@ -8,26 +8,18 @@
 // For remote access, implement Bearer token auth using the vault.
 
 import { Application, Request, Response } from 'express';
-import { ChildProcess, spawn } from 'child_process';
+import multer from 'multer';
+import { generateDocxBuffer } from '../services/docx-export.js';
 
 export function createAPIRoutes(app: Application, gateway: any, rootDir?: string): void {
   const services = gateway.getServices();
   const baseDir = rootDir || process.cwd();
 
-  // In-memory conductor state (updated by conductor script, read by dashboard)
-  let conductorState: any = { phase: 'idle', step: '', progress: {} };
-  let conductorStopRequested = false;
-  let conductorProcess: ChildProcess | null = null;
-
-  // Tracking for Telegram notifications (avoid spamming — only notify on milestones)
-  let previousConductorPhase = 'idle';
-  let previousChaptersComplete = 0;
-
   // ── Health Check ──
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({
       status: 'ok',
-      version: '2.0.0',
+      version: '3.0.0',
       name: 'AuthorClaw',
       brand: 'Writing Secrets',
       uptime: process.uptime(),
@@ -422,20 +414,20 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   });
 
   // ═══════════════════════════════════════════════════════════
-  // Goal Engine (autonomous goal-based task planning)
+  // Project Engine (autonomous project-based task planning)
   // ═══════════════════════════════════════════════════════════
 
-  app.get('/api/goals/templates', async (_req: Request, res: Response) => {
-    const goals = gateway.getGoalEngine?.();
-    if (!goals) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  app.get('/api/projects/templates', async (_req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
     // Merge built-in templates with custom templates
-    const builtIn = goals.getTemplates();
+    const builtIn = engine.getTemplates();
     const { join: j } = await import('path');
     const { readFile: rf } = await import('fs/promises');
     const { existsSync: ex } = await import('fs');
-    const customPath = j(baseDir, 'workspace', '.config', 'custom-goal-templates.json');
+    const customPath = j(baseDir, 'workspace', '.config', 'custom-project-templates.json');
     let custom: any[] = [];
     if (ex(customPath)) {
       try { custom = JSON.parse(await rf(customPath, 'utf-8')); } catch { /* ok */ }
@@ -446,8 +438,8 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     res.json({ templates: [...builtIn, ...customMapped] });
   });
 
-  // Save a custom goal template
-  app.post('/api/goals/templates', async (req: Request, res: Response) => {
+  // Save a custom project template
+  app.post('/api/projects/templates', async (req: Request, res: Response) => {
     const { title, description, type } = req.body;
     if (!title || !description) {
       return res.status(400).json({ error: 'title and description required' });
@@ -458,7 +450,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     const { randomBytes } = await import('crypto');
     const configDir = j(baseDir, 'workspace', '.config');
     await mkd(configDir, { recursive: true });
-    const customPath = j(configDir, 'custom-goal-templates.json');
+    const customPath = j(configDir, 'custom-project-templates.json');
     let custom: any[] = [];
     if (ex(customPath)) {
       try { custom = JSON.parse(await rf(customPath, 'utf-8')); } catch { /* ok */ }
@@ -468,12 +460,12 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     res.json({ success: true });
   });
 
-  // Delete a custom goal template
-  app.delete('/api/goals/templates/:id', async (req: Request, res: Response) => {
+  // Delete a custom project template
+  app.delete('/api/projects/templates/:id', async (req: Request, res: Response) => {
     const { join: j } = await import('path');
     const { readFile: rf, writeFile: wf } = await import('fs/promises');
     const { existsSync: ex } = await import('fs');
-    const customPath = j(baseDir, 'workspace', '.config', 'custom-goal-templates.json');
+    const customPath = j(baseDir, 'workspace', '.config', 'custom-project-templates.json');
     if (!ex(customPath)) {
       return res.json({ success: false, error: 'No custom templates' });
     }
@@ -484,133 +476,140 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     res.json({ success: true });
   });
 
-  // Create a new goal — supports dynamic AI planning
-  app.post('/api/goals', async (req: Request, res: Response) => {
-    const goals = gateway.getGoalEngine?.();
-    if (!goals) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  // Create a new project — supports dynamic AI planning
+  app.post('/api/projects/create', async (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    const { type, title, description, context, planning } = req.body;
+    const { type, title, description, context, planning, config } = req.body;
     if (!title || !description) {
       return res.status(400).json({ error: 'title and description required' });
+    }
+
+    // Novel pipeline: use dedicated pipeline builder
+    const inferredType = type || engine.inferProjectType(description);
+    if (inferredType === 'novel-pipeline') {
+      const project = engine.createNovelPipeline(title, description, config || context);
+      return res.json({ project, planning: 'novel-pipeline' });
     }
 
     // Dynamic planning: ask the AI to figure out the steps
     if (planning === 'dynamic') {
       const skillCatalog = services.skills.getSkillCatalog();
       const authorOSTools = services.authorOS?.getAvailableTools() || [];
-      const goal = await goals.planGoal(title, description, skillCatalog, authorOSTools, context);
-      return res.json({ goal, planning: 'dynamic' });
+      const project = await engine.planProject(title, description, skillCatalog, authorOSTools, context);
+      return res.json({ project, planning: 'dynamic' });
     }
 
     // Template-based fallback
-    const goalType = type || goals.inferGoalType(description);
-    const goal = goals.createGoal(goalType, title, description, context);
-    res.json({ goal, planning: 'template' });
+    const projectType = inferredType;
+    const project = engine.createProject(projectType, title, description, context);
+    res.json({ project, planning: 'template' });
   });
 
-  app.get('/api/goals', (req: Request, res: Response) => {
-    const goals = gateway.getGoalEngine?.();
-    if (!goals) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  app.get('/api/projects/list', (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
     const status = (req.query as any).status;
-    res.json({ goals: goals.listGoals(status) });
+    res.json({ projects: engine.listProjects(status) });
   });
 
-  app.get('/api/goals/:id', (req: Request, res: Response) => {
-    const goals = gateway.getGoalEngine?.();
-    if (!goals) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  app.get('/api/projects/:id', (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    const goal = goals.getGoal(req.params.id);
-    if (!goal) {
-      return res.status(404).json({ error: 'Goal not found' });
+    const project = engine.getProject(req.params.id);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
     }
-    res.json({ goal });
+    res.json({ project });
   });
 
-  app.post('/api/goals/:id/start', (req: Request, res: Response) => {
-    const goals = gateway.getGoalEngine?.();
-    if (!goals) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  app.post('/api/projects/:id/start', (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    const step = goals.startGoal(req.params.id);
+    const step = engine.startProject(req.params.id);
     if (!step) {
-      return res.status(404).json({ error: 'Goal not found or no pending steps' });
+      return res.status(404).json({ error: 'Project not found or no pending steps' });
     }
-    res.json({ step, goal: goals.getGoal(req.params.id) });
+    res.json({ step, project: engine.getProject(req.params.id) });
   });
 
-  app.post('/api/goals/:id/execute', async (req: Request, res: Response) => {
-    const goalsEngine = gateway.getGoalEngine?.();
-    if (!goalsEngine) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  app.post('/api/projects/:id/execute', async (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    const goal = goalsEngine.getGoal(req.params.id);
-    if (!goal) {
-      return res.status(404).json({ error: 'Goal not found' });
+    const project = engine.getProject(req.params.id);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
     }
 
-    const activeStep = goal.steps.find((s: any) => s.status === 'active');
+    const activeStep = project.steps.find((s: any) => s.status === 'active');
     if (!activeStep) {
-      return res.status(400).json({ error: 'No active step. Start the goal first.' });
+      return res.status(400).json({ error: 'No active step. Start the project first.' });
     }
 
     try {
-      const goalContext = goalsEngine.buildGoalContext(goal, activeStep);
+      const projectContext = engine.buildProjectContext(project, activeStep);
       let response = '';
 
       await gateway.handleMessage(
         activeStep.prompt,
-        'goals',
+        'projects',
         (text: string) => { response = text; },
-        goalContext
+        projectContext
       );
 
       if (!response || response.length < 50) {
-        goalsEngine.failStep(goal.id, activeStep.id, 'Empty or too-short response from AI');
+        engine.failStep(project.id, activeStep.id, 'Empty or too-short response from AI');
         return res.json({
           success: false,
           error: 'AI returned an insufficient response',
-          goal: goalsEngine.getGoal(goal.id),
+          project: engine.getProject(project.id),
         });
       }
 
-      const nextStep = goalsEngine.completeStep(goal.id, activeStep.id, response);
+      const nextStep = engine.completeStep(project.id, activeStep.id, response);
 
       res.json({
         success: true,
         completedStep: activeStep.id,
         response,
         nextStep,
-        goal: goalsEngine.getGoal(goal.id),
+        project: engine.getProject(project.id),
       });
     } catch (error) {
-      goalsEngine.failStep(goal.id, activeStep.id, String(error));
+      engine.failStep(project.id, activeStep.id, String(error));
       res.status(500).json({
         error: 'Step execution failed: ' + String(error),
-        goal: goalsEngine.getGoal(goal.id),
+        project: engine.getProject(project.id),
       });
     }
   });
 
-  // Auto-execute ALL steps of a goal (fully autonomous mode)
-  app.post('/api/goals/:id/auto-execute', async (req: Request, res: Response) => {
-    const goalsEngine = gateway.getGoalEngine?.();
-    if (!goalsEngine) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  // Auto-execute ALL steps of a project (fully autonomous mode)
+  app.post('/api/projects/:id/auto-execute', async (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    const goal = goalsEngine.getGoal(req.params.id);
-    if (!goal) {
-      return res.status(404).json({ error: 'Goal not found' });
+    const project = engine.getProject(req.params.id);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
     }
 
-    if (goal.status === 'pending') {
-      goalsEngine.startGoal(req.params.id);
-    } else if (goal.status === 'paused') {
-      goal.status = 'active';
-      const firstPending = goal.steps.find((s: any) => s.status === 'pending');
+    if (project.status === 'pending') {
+      engine.startProject(req.params.id);
+    } else if (project.status === 'paused') {
+      project.status = 'active';
+      const firstPending = project.steps.find((s: any) => s.status === 'pending');
       if (firstPending) firstPending.status = 'active';
     }
 
@@ -620,28 +619,28 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     const workspaceDir = join(baseDir, 'workspace');
 
     while (true) {
-      const currentGoal = goalsEngine.getGoal(req.params.id);
-      if (!currentGoal) break;
+      const currentProject = engine.getProject(req.params.id);
+      if (!currentProject) break;
 
-      // Check if goal was paused externally (via /stop or dashboard)
-      if (currentGoal.status === 'paused' || currentGoal.status === 'completed') break;
+      // Check if project was paused externally (via /stop or dashboard)
+      if (currentProject.status === 'paused' || currentProject.status === 'completed') break;
 
-      const activeStep = currentGoal.steps.find((s: any) => s.status === 'active');
+      const activeStep = currentProject.steps.find((s: any) => s.status === 'active');
       if (!activeStep) break;
 
       try {
-        const goalContext = goalsEngine.buildGoalContext(currentGoal, activeStep);
+        const projectContext = engine.buildProjectContext(currentProject, activeStep);
         let response = '';
 
         await gateway.handleMessage(
           activeStep.prompt,
-          'goal-engine',
+          'project-engine',
           (text: string) => { response = text; },
-          goalContext
+          projectContext
         );
 
         if (!response || response.length < 50) {
-          goalsEngine.failStep(currentGoal.id, activeStep.id, 'Empty or too-short response from AI');
+          engine.failStep(currentProject.id, activeStep.id, 'Empty or too-short response from AI');
           results.push({ step: activeStep.label, success: false, error: 'Insufficient AI response' });
           break;
         }
@@ -650,22 +649,60 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
 
         // Save to file
         try {
-          const projectDir = join(workspaceDir, 'projects', currentGoal.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+          const projectDir = join(workspaceDir, 'projects', currentProject.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
           await mkdir(projectDir, { recursive: true });
           const stepFileName = `${activeStep.id}-${activeStep.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
           await writeFile(join(projectDir, stepFileName), `# ${activeStep.label}\n\n${response}`, 'utf-8');
         } catch { /* non-fatal */ }
 
-        goalsEngine.completeStep(currentGoal.id, activeStep.id, response);
+        engine.completeStep(currentProject.id, activeStep.id, response);
         // Track words for Morning Briefing
         services.heartbeat.addWords(wordCount);
         results.push({ step: activeStep.label, success: true, wordCount });
 
+        // ── Manuscript Assembly: combine chapter files after assembly step ──
+        if ((activeStep as any).phase === 'assembly' && currentProject.type === 'novel-pipeline') {
+          try {
+            const { existsSync: exLocal } = await import('fs');
+            const { readFile: readF } = await import('fs/promises');
+            const projectSlug = currentProject.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            const projectDir = join(workspaceDir, 'projects', projectSlug);
+
+            const writingSteps = currentProject.steps
+              .filter((s: any) => s.phase === 'writing' && s.status === 'completed')
+              .sort((a: any, b: any) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
+
+            const chapterContents: string[] = [];
+            for (const ws of writingSteps) {
+              const expectedFile = `${(ws as any).id}-${(ws as any).label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+              const fullPath = join(projectDir, expectedFile);
+              if (exLocal(fullPath)) {
+                const raw = await readF(fullPath, 'utf-8');
+                const content = raw.replace(/^# .+\n\n/, '');
+                chapterContents.push(`## Chapter ${(ws as any).chapterNumber || chapterContents.length + 1}\n\n${content}`);
+              }
+            }
+
+            if (chapterContents.length > 0) {
+              const manuscriptMd = `# ${currentProject.title}\n\n` + chapterContents.join('\n\n---\n\n');
+              await writeFile(join(projectDir, 'manuscript.md'), manuscriptMd, 'utf-8');
+
+              const docxBuffer = await generateDocxBuffer({
+                title: currentProject.title,
+                author: 'AuthorClaw',
+                content: manuscriptMd,
+              });
+              await writeFile(join(projectDir, 'manuscript.docx'), docxBuffer);
+              console.log(`  [assembly] Manuscript assembled: ${chapterContents.length} chapters`);
+            }
+          } catch { /* non-fatal */ }
+        }
+
         // Re-check pause AFTER step completes (catches /stop sent during long AI call)
-        const freshGoal = goalsEngine.getGoal(req.params.id);
-        if (freshGoal?.status === 'paused' || freshGoal?.status === 'completed') break;
+        const freshProject = engine.getProject(req.params.id);
+        if (freshProject?.status === 'paused' || freshProject?.status === 'completed') break;
       } catch (error) {
-        goalsEngine.failStep(currentGoal.id, activeStep.id, String(error));
+        engine.failStep(currentProject.id, activeStep.id, String(error));
         results.push({ step: activeStep.label, success: false, error: String(error) });
         break;
       }
@@ -674,35 +711,122 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     res.json({
       success: true,
       results,
-      goal: goalsEngine.getGoal(req.params.id),
+      project: engine.getProject(req.params.id),
     });
   });
 
-  app.post('/api/goals/:id/skip/:stepId', (req: Request, res: Response) => {
-    const goals = gateway.getGoalEngine?.();
-    if (!goals) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  app.post('/api/projects/:id/skip/:stepId', (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    const nextStep = goals.skipStep(req.params.id, req.params.stepId);
-    res.json({ nextStep, goal: goals.getGoal(req.params.id) });
+    const nextStep = engine.skipStep(req.params.id, req.params.stepId);
+    res.json({ nextStep, project: engine.getProject(req.params.id) });
   });
 
-  app.post('/api/goals/:id/pause', (req: Request, res: Response) => {
-    const goals = gateway.getGoalEngine?.();
-    if (!goals) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  app.post('/api/projects/:id/pause', (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    goals.pauseGoal(req.params.id);
-    res.json({ goal: goals.getGoal(req.params.id) });
+    engine.pauseProject(req.params.id);
+    res.json({ project: engine.getProject(req.params.id) });
   });
 
-  app.delete('/api/goals/:id', (req: Request, res: Response) => {
-    const goals = gateway.getGoalEngine?.();
-    if (!goals) {
-      return res.status(503).json({ error: 'Goal engine not initialized' });
+  app.delete('/api/projects/:id', (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
     }
-    const deleted = goals.deleteGoal(req.params.id);
+    const deleted = engine.deleteProject(req.params.id);
     res.json({ success: deleted });
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Document Upload
+  // ═══════════════════════════════════════════════════════════
+
+  const upload = multer({
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+    fileFilter: (_req, file, cb) => {
+      const allowed = ['.txt', '.md', '.docx'];
+      const ext = '.' + (file.originalname.split('.').pop() || '').toLowerCase();
+      if (allowed.includes(ext)) {
+        cb(null, true);
+      } else {
+        cb(new Error(`File type "${ext}" not supported. Use .txt, .md, or .docx`));
+      }
+    },
+    storage: multer.memoryStorage(),
+  });
+
+  app.post('/api/projects/:id/upload', upload.single('file'), async (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      return res.status(503).json({ error: 'Project engine not initialized' });
+    }
+    const project = engine.getProject(req.params.id);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const { join: j } = await import('path');
+    const { mkdir: mkd, writeFile: wf } = await import('fs/promises');
+
+    let textContent = '';
+    const filename = req.file.originalname;
+    const ext = filename.split('.').pop()?.toLowerCase();
+
+    if (ext === 'txt' || ext === 'md') {
+      textContent = req.file.buffer.toString('utf-8');
+    } else if (ext === 'docx') {
+      // Extract text from docx — simple XML-based extraction (no mammoth dependency)
+      try {
+        const { Readable } = await import('stream');
+        const { createInflateRaw } = await import('zlib');
+        // For docx, we'll just extract raw text from the XML
+        const content = req.file.buffer.toString('utf-8');
+        // Simple extraction: look for text between XML tags in the buffer
+        const textParts = content.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
+        if (textParts) {
+          textContent = textParts.map(t => t.replace(/<[^>]+>/g, '')).join(' ');
+        } else {
+          textContent = '[Could not extract text from .docx — try .txt or .md format]';
+        }
+      } catch {
+        textContent = '[Failed to parse .docx file — try .txt or .md format]';
+      }
+    }
+
+    // Save the file to project upload directory
+    const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const uploadDir = j(baseDir, 'workspace', 'projects', projectSlug, 'uploads');
+    await mkd(uploadDir, { recursive: true });
+    await wf(j(uploadDir, filename), req.file.buffer);
+
+    // Store text content in project context for use in AI steps
+    if (!project.context.uploads) project.context.uploads = [];
+    const wordCount = textContent.split(/\s+/).filter(Boolean).length;
+    project.context.uploads.push({
+      filename,
+      wordCount,
+      preview: textContent.substring(0, 500),
+      uploadedAt: new Date().toISOString(),
+    });
+
+    // Also inject the uploaded content into the project context for future steps
+    if (!project.context.uploadedContent) project.context.uploadedContent = '';
+    project.context.uploadedContent += `\n\n--- Uploaded: ${filename} ---\n${textContent.substring(0, 30000)}`;
+
+    res.json({
+      success: true,
+      filename,
+      wordCount,
+      preview: textContent.substring(0, 200),
+    });
   });
 
   // ═══════════════════════════════════════════════════════════
@@ -747,6 +871,23 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     res.json({ success: true, status: services.heartbeat.getAutonomousStatus() });
   });
 
+  // ── Agent Journal ──
+  app.get('/api/agent/journal', (_req: Request, res: Response) => {
+    res.json({ journal: services.heartbeat.getJournal() });
+  });
+
+  app.get('/api/agent/status', (_req: Request, res: Response) => {
+    const autonomousStatus = services.heartbeat.getAutonomousStatus();
+    const stats = services.heartbeat.getStats();
+    res.json({
+      ...autonomousStatus,
+      todayWords: stats.todayWords,
+      dailyWordGoal: stats.dailyWordGoal,
+      streak: stats.streak,
+      goalPercent: stats.goalPercent,
+    });
+  });
+
   // ── Author OS tools status ──
   app.get('/api/author-os/status', (_req: Request, res: Response) => {
     if (!services.authorOS) {
@@ -767,13 +908,11 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     const { readFile: rf, writeFile: wf, mkdir: mkd } = await import('fs/promises');
 
     const workspaceDir = j(baseDir, 'workspace');
-    const conductorDir = j(baseDir, 'conductor-output');
 
-    // Search for the file in workspace → projects → conductor-output → baseDir
+    // Search for the file in workspace → projects → baseDir
     const searchPaths = [
       r(workspaceDir, inputFile),
       r(workspaceDir, 'projects', inputFile),
-      r(conductorDir, inputFile),
       r(baseDir, inputFile),
     ];
     // Also search recursively in workspace/projects/*/
@@ -814,51 +953,9 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     const results: string[] = [];
 
     try {
-      // ── Word Export (native, using docx npm package) ──
+      // ── Word Export (native, using shared docx utility) ──
       if (requestedFormats.includes('docx') || requestedFormats.includes('all')) {
-        const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import('docx');
-        const paragraphs: any[] = [];
-
-        // Title page
-        paragraphs.push(new Paragraph({ children: [new TextRun({ text: docTitle, bold: true, size: 48 })], spacing: { after: 400 } }));
-        paragraphs.push(new Paragraph({ children: [new TextRun({ text: 'by ' + docAuthor, italics: true, size: 24 })], spacing: { after: 800 } }));
-        paragraphs.push(new Paragraph({ children: [new TextRun({ text: '' })], spacing: { after: 400 } }));
-
-        // Parse markdown content into paragraphs
-        const lines = content.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('# ')) {
-            paragraphs.push(new Paragraph({ text: line.replace(/^# /, ''), heading: HeadingLevel.HEADING_1 }));
-          } else if (line.startsWith('## ')) {
-            paragraphs.push(new Paragraph({ text: line.replace(/^## /, ''), heading: HeadingLevel.HEADING_2 }));
-          } else if (line.startsWith('### ')) {
-            paragraphs.push(new Paragraph({ text: line.replace(/^### /, ''), heading: HeadingLevel.HEADING_3 }));
-          } else if (line.trim() === '') {
-            paragraphs.push(new Paragraph({ children: [] }));
-          } else {
-            // Handle basic bold/italic markdown
-            const children: any[] = [];
-            const parts = line.split(/(\*\*.*?\*\*|\*.*?\*)/);
-            for (const part of parts) {
-              if (part.startsWith('**') && part.endsWith('**')) {
-                children.push(new TextRun({ text: part.slice(2, -2), bold: true }));
-              } else if (part.startsWith('*') && part.endsWith('*')) {
-                children.push(new TextRun({ text: part.slice(1, -1), italics: true }));
-              } else {
-                children.push(new TextRun({ text: part }));
-              }
-            }
-            paragraphs.push(new Paragraph({ children }));
-          }
-        }
-
-        const doc = new Document({
-          creator: docAuthor,
-          title: docTitle,
-          sections: [{ children: paragraphs }],
-        });
-
-        const buffer = await Packer.toBuffer(doc);
+        const buffer = await generateDocxBuffer({ title: docTitle, author: docAuthor, content });
         const outPath = j(exportDir, docTitle.replace(/[^a-zA-Z0-9\s-]/g, '').replace(/\s+/g, '-') + '.docx');
         await wf(outPath, buffer);
         results.push(outPath);
@@ -1002,248 +1099,44 @@ ${sourceCode.substring(0, 15000)}
   });
 
   // ═══════════════════════════════════════════════════════════
-  // Conductor Management (book-conductor.ts communication)
+  // Internet Research (web search + content extraction)
   // ═══════════════════════════════════════════════════════════
 
-  // Conductor posts its status here (called by scripts/book-conductor.ts)
-  app.post('/api/conductor/status', (req: Request, res: Response) => {
-    const newState = req.body;
-    const newPhase = newState.phase || '';
-    const newChapters = newState.progress?.chaptersComplete || 0;
-
-    // Detect meaningful milestones for Telegram notification
-    let notification = '';
-
-    if (newPhase !== previousConductorPhase && newPhase !== 'idle') {
-      // Phase transition
-      if (newPhase.startsWith('Complete')) {
-        const wc = newState.progress?.wordCount || 0;
-        const elapsed = newState.progress?.elapsedMs
-          ? Math.round(newState.progress.elapsedMs / 60000)
-          : '?';
-        notification = `🎉 Conductor finished!\n${wc.toLocaleString()} words in ${elapsed} minutes`;
-      } else if (newPhase.startsWith('Error') || newPhase === 'Stopped') {
-        notification = `⚠️ Conductor ${newPhase.toLowerCase()}: ${newState.step || ''}`;
-      } else {
-        notification = `🎼 ${newPhase}\n${newState.step || ''}`;
-      }
-    } else if (newChapters > previousChaptersComplete && newChapters > 0) {
-      // Chapter completion
-      const total = newState.progress?.totalChapters || 25;
-      const wc = newState.progress?.wordCount || 0;
-      notification = `📖 Chapter ${newChapters}/${total} done (${wc.toLocaleString()} words total)`;
+  app.post('/api/research', async (req: Request, res: Response) => {
+    const research = services.research;
+    if (!research) {
+      return res.status(503).json({ error: 'Research service not initialized' });
     }
-
-    // Update tracking state
-    previousConductorPhase = newPhase;
-    previousChaptersComplete = newChapters;
-    conductorState = newState;
-
-    // Broadcast to Telegram if we have a notification
-    if (notification && gateway.isTelegramConnected?.()) {
-      gateway.broadcastTelegram?.(notification);
+    const { query, maxResults } = req.body;
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({ error: 'query required' });
     }
-
-    res.json({ ok: true, stopRequested: conductorStopRequested });
-  });
-
-  // Dashboard reads conductor status
-  app.get('/api/conductor/status', (_req: Request, res: Response) => {
-    res.json({ ...conductorState, stopRequested: conductorStopRequested });
-  });
-
-  // Dashboard sends stop signal — also kill the process if running
-  app.post('/api/conductor/stop', (_req: Request, res: Response) => {
-    conductorStopRequested = true;
-    // Actually kill the conductor process (don't just set a flag)
-    if (conductorProcess && conductorProcess.exitCode === null) {
-      try {
-        conductorProcess.kill('SIGTERM');
-        setTimeout(() => {
-          // Force kill if it didn't stop within 5 seconds
-          if (conductorProcess && conductorProcess.exitCode === null) {
-            conductorProcess.kill('SIGKILL');
-          }
-        }, 5000);
-      } catch { /* process already dead */ }
-    }
-    res.json({ success: true, message: 'Conductor stopped' });
-  });
-
-  // Reset stop signal (when conductor starts)
-  app.post('/api/conductor/start', (_req: Request, res: Response) => {
-    conductorStopRequested = false;
-    conductorState = { phase: 'starting', step: 'Initializing...', progress: {} };
-    res.json({ success: true });
-  });
-
-  // Launch conductor as a child process
-  app.post('/api/conductor/launch', async (req: Request, res: Response) => {
-    if (conductorProcess && conductorProcess.exitCode === null) {
-      return res.status(409).json({ error: 'Conductor is already running' });
-    }
-
-    // Pre-flight: verify at least one AI provider is active
-    const providers = services.aiRouter.getActiveProviders();
-    if (!providers || providers.length === 0) {
-      return res.status(400).json({ error: 'No AI providers active. Add an API key in Settings first.' });
-    }
-
-    const { join: j } = await import('path');
-    const { existsSync: ex } = await import('fs');
-    const { mkdir: mkd, writeFile: wf, readFile: rf } = await import('fs/promises');
-    const scriptPath = j(baseDir, 'scripts', 'book-conductor.ts');
-
-    if (!ex(scriptPath)) {
-      return res.status(404).json({ error: 'Conductor script not found at ' + scriptPath });
-    }
-
-    // Save config from launch request body (dashboard sends current form fields)
-    const reqBody = req.body || {};
-    const { totalChapters, targetChapterWordCount, premise, projectName, ...extraFields } = reqBody;
-    const hasConfig = totalChapters || targetChapterWordCount || premise || projectName || Object.keys(extraFields).length > 0;
-    if (hasConfig) {
-      const configDir = j(baseDir, 'workspace', '.config');
-      await mkd(configDir, { recursive: true });
-      const configPath = j(configDir, 'project.json');
-      let existing: any = {};
-      try { existing = JSON.parse(await rf(configPath, 'utf-8')); } catch { /* new config */ }
-      // Merge ALL fields from dashboard form into config
-      const merged = { ...existing, ...extraFields };
-      if (totalChapters) merged.totalChapters = Number(totalChapters);
-      if (targetChapterWordCount) merged.targetChapterWordCount = Number(targetChapterWordCount);
-      if (premise) merged.premise = premise;
-      if (projectName) merged.projectName = projectName;
-      await wf(configPath, JSON.stringify(merged, null, 2));
-    }
-
-    // Reset state
-    conductorStopRequested = false;
-    conductorState = { phase: 'starting', step: 'Launching conductor process...', progress: {} };
 
     try {
-      conductorProcess = spawn('npx', ['tsx', scriptPath], {
-        cwd: baseDir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: true,
-        env: { ...process.env },
-      });
+      // Search
+      const searchResults = await research.search(query, maxResults || 5);
 
-      conductorProcess.stdout?.on('data', (data: Buffer) => {
-        const line = data.toString().trim();
-        if (line) console.log('[conductor]', line);
-      });
+      // Fetch and extract top 3 allowed results
+      const enriched = await Promise.all(
+        searchResults.results.slice(0, 3).map(async (r: any) => {
+          const extracted = await research.fetchAndExtract(r.url);
+          return {
+            title: r.title,
+            url: r.url,
+            snippet: r.snippet,
+            fullText: extracted.ok ? extracted.text?.substring(0, 5000) : undefined,
+          };
+        })
+      );
 
-      conductorProcess.stderr?.on('data', (data: Buffer) => {
-        const line = data.toString().trim();
-        if (line) console.error('[conductor:err]', line);
+      res.json({
+        results: enriched,
+        blocked: searchResults.blocked,
+        totalFound: searchResults.results.length,
       });
-
-      conductorProcess.on('exit', (code) => {
-        console.log(`[conductor] Process exited with code ${code}`);
-        conductorProcess = null;
-        if (conductorState.phase !== 'Complete!') {
-          const exitPhase = code === 0 ? 'Complete!' : code === 2 ? 'Stopped (user)' : 'Stopped';
-          const exitStep = code === 0 ? 'Finished successfully' : code === 2 ? 'Stopped by user' : `Exit code: ${code}`;
-          conductorState = { phase: exitPhase, step: exitStep, progress: conductorState.progress || {} };
-        }
-      });
-
-      conductorProcess.on('error', (err) => {
-        console.error('[conductor] Process error:', err);
-        conductorProcess = null;
-        conductorState = { phase: 'Error', step: String(err), progress: {} };
-      });
-
-      await services.audit.log('conductor', 'launched', {});
-      res.json({ success: true, message: 'Conductor launched', pid: conductorProcess.pid });
     } catch (error) {
-      conductorProcess = null;
-      res.status(500).json({ error: 'Failed to launch conductor: ' + String(error) });
+      res.status(500).json({ error: 'Research failed: ' + String(error) });
     }
-  });
-
-  // Check if conductor process is running
-  app.get('/api/conductor/running', (_req: Request, res: Response) => {
-    const running = conductorProcess !== null && conductorProcess.exitCode === null;
-    res.json({ running, pid: conductorProcess?.pid || null });
-  });
-
-  // Save project config for conductor
-  app.post('/api/conductor/config', async (req: Request, res: Response) => {
-    const { join: j } = await import('path');
-    const { mkdir, writeFile } = await import('fs/promises');
-    const configDir = j(baseDir, 'workspace', '.config');
-    await mkdir(configDir, { recursive: true });
-    await writeFile(j(configDir, 'project.json'), JSON.stringify(req.body, null, 2));
-    res.json({ success: true });
-  });
-
-  // Load project config for conductor
-  app.get('/api/conductor/config', async (_req: Request, res: Response) => {
-    const { join: j } = await import('path');
-    const { readFile: rf } = await import('fs/promises');
-    const { existsSync: ex } = await import('fs');
-    const configPath = j(baseDir, 'workspace', '.config', 'project.json');
-    if (ex(configPath)) {
-      try {
-        const data = JSON.parse(await rf(configPath, 'utf-8'));
-        return res.json(data);
-      } catch { /* fall through */ }
-    }
-    res.json({});
-  });
-
-  // ═══════════════════════════════════════════════════════════
-  // Project Config Templates (saved configurations)
-  // ═══════════════════════════════════════════════════════════
-
-  app.get('/api/conductor/config-templates', async (_req: Request, res: Response) => {
-    const { join: j } = await import('path');
-    const { readFile: rf } = await import('fs/promises');
-    const { existsSync: ex } = await import('fs');
-    const templatesPath = j(baseDir, 'workspace', '.config', 'project-config-templates.json');
-    let templates: any[] = [];
-    if (ex(templatesPath)) {
-      try { templates = JSON.parse(await rf(templatesPath, 'utf-8')); } catch { /* ok */ }
-    }
-    res.json({ templates });
-  });
-
-  app.post('/api/conductor/config-templates', async (req: Request, res: Response) => {
-    const { name, config } = req.body;
-    if (!name) {
-      return res.status(400).json({ error: 'name required' });
-    }
-    const { join: j } = await import('path');
-    const { readFile: rf, writeFile: wf, mkdir: mkd } = await import('fs/promises');
-    const { existsSync: ex } = await import('fs');
-    const { randomBytes } = await import('crypto');
-    const configDir = j(baseDir, 'workspace', '.config');
-    await mkd(configDir, { recursive: true });
-    const templatesPath = j(configDir, 'project-config-templates.json');
-    let templates: any[] = [];
-    if (ex(templatesPath)) {
-      try { templates = JSON.parse(await rf(templatesPath, 'utf-8')); } catch { /* ok */ }
-    }
-    templates.push({ id: randomBytes(6).toString('hex'), name, config: config || {}, createdAt: new Date().toISOString() });
-    await wf(templatesPath, JSON.stringify(templates, null, 2));
-    res.json({ success: true });
-  });
-
-  app.delete('/api/conductor/config-templates/:id', async (req: Request, res: Response) => {
-    const { join: j } = await import('path');
-    const { readFile: rf, writeFile: wf } = await import('fs/promises');
-    const { existsSync: ex } = await import('fs');
-    const templatesPath = j(baseDir, 'workspace', '.config', 'project-config-templates.json');
-    if (!ex(templatesPath)) {
-      return res.json({ success: false, error: 'No config templates' });
-    }
-    let templates: any[] = [];
-    try { templates = JSON.parse(await rf(templatesPath, 'utf-8')); } catch { /* ok */ }
-    templates = templates.filter((t: any) => t.id !== req.params.id);
-    await wf(templatesPath, JSON.stringify(templates, null, 2));
-    res.json({ success: true });
   });
 
   // ═══════════════════════════════════════════════════════════

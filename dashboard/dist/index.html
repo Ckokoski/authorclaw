@@ -125,27 +125,27 @@
   .stop-section { text-align: center; margin-top: 18px; padding: 16px; background: #1a1a2e; border-radius: 8px; border: 1px dashed #0f3460; }
   .stop-section p { color: #7f8c8d; font-size: 13px; margin-top: 8px; }
 
-  /* Goal cards */
-  .goal-template { background: #1a1a2e; border: 1px solid #0f3460; border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.2s; }
-  .goal-template:hover { border-color: #e67e22; transform: translateY(-2px); }
-  .goal-template .gt-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
-  .goal-template .gt-desc { font-size: 13px; color: #7f8c8d; }
-  .goal-template .gt-steps { font-size: 12px; color: #e67e22; margin-top: 6px; }
-  .goal-templates-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  /* Project cards */
+  .project-template { background: #1a1a2e; border: 1px solid #0f3460; border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.2s; }
+  .project-template:hover { border-color: #e67e22; transform: translateY(-2px); }
+  .project-template .gt-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+  .project-template .gt-desc { font-size: 13px; color: #7f8c8d; }
+  .project-template .gt-steps { font-size: 12px; color: #e67e22; margin-top: 6px; }
+  .project-templates-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
 
-  .goal-item { background: #1a1a2e; border: 1px solid #0f3460; border-radius: 10px; padding: 16px; margin-bottom: 10px; }
-  .goal-item .gi-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .goal-item .gi-title { font-weight: 700; font-size: 15px; }
-  .goal-item .gi-status { font-size: 12px; padding: 2px 8px; border-radius: 10px; }
+  .project-item { background: #1a1a2e; border: 1px solid #0f3460; border-radius: 10px; padding: 16px; margin-bottom: 10px; }
+  .project-item .gi-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .project-item .gi-title { font-weight: 700; font-size: 15px; }
+  .project-item .gi-status { font-size: 12px; padding: 2px 8px; border-radius: 10px; }
   .gi-status.pending { background: #2c3e50; color: #7f8c8d; }
   .gi-status.active { background: #2980b9; color: #fff; }
   .gi-status.paused { background: #f39c12; color: #fff; }
   .gi-status.completed { background: #27ae60; color: #fff; }
   .gi-status.failed { background: #c0392b; color: #fff; }
-  .goal-item .gi-progress { margin: 8px 0; }
-  .goal-item .gi-steps { font-size: 12px; color: #7f8c8d; }
-  .goal-item .gi-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-  .goal-item .gi-actions button { font-size: 12px; padding: 5px 12px; }
+  .project-item .gi-progress { margin: 8px 0; }
+  .project-item .gi-steps { font-size: 12px; color: #7f8c8d; }
+  .project-item .gi-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .project-item .gi-actions button { font-size: 12px; padding: 5px 12px; }
 
   .step-list { margin-top: 10px; }
   .step-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #0f3460; font-size: 13px; }
@@ -170,7 +170,7 @@
     .form-group-inline { grid-template-columns: 1fr; }
     .form-row { flex-direction: column; align-items: stretch; }
     .form-row select { min-width: 100%; }
-    .goal-templates-grid { grid-template-columns: 1fr; }
+    .project-templates-grid { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 480px) {
@@ -193,7 +193,7 @@
   .chat-msg.bot { align-self: flex-start; background: #16213e; color: #e0e0e0; border: 1px solid #0f3460; border-bottom-left-radius: 4px; }
   .chat-msg.typing { color: #7f8c8d; font-style: italic; }
   .chat-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #0f3460; background: #16213e; }
-  .chat-input-row textarea { flex: 1; resize: none; min-height: 42px; max-height: 120px; background: #1a1a2e; border: 1px solid #0f3460; color: #e0e0e0; padding: 10px 12px; border-radius: 8px; font-size: 14px; font-family: inherit; }
+  .chat-input-row textarea { flex: 1; resize: none; min-height: 42px; max-height: 160px; background: #1a1a2e; border: 1px solid #0f3460; color: #e0e0e0; padding: 10px 12px; border-radius: 8px; font-size: 14px; font-family: inherit; }
   .chat-input-row button { align-self: flex-end; }
 
   /* Briefing cards */
@@ -214,13 +214,12 @@
 
 <div class="header">
   <h1><span class="status-dot ok" id="healthDot"></span> &#9997;&#65039; AuthorClaw</h1>
-  <span class="version" id="versionLabel">v2.0.0 &mdash; The Autonomous AI Writing Agent</span>
+  <span class="version" id="versionLabel">v3.0.0 &mdash; The Autonomous AI Writing Agent</span>
 </div>
 
 <div class="tabs" id="tabBar">
   <div class="tab active" data-tab="home">&#127968; Home</div>
-  <div class="tab" data-tab="goals">&#127919; Goals</div>
-  <div class="tab" data-tab="project">&#128214; Book Launch</div>
+  <div class="tab" data-tab="projects">&#128203; Projects</div>
   <div class="tab" data-tab="settings">&#9881;&#65039; Settings</div>
 </div>
 
@@ -250,8 +249,8 @@
     <h3>&#9728;&#65039; Morning Briefing</h3>
     <div class="briefing-grid">
       <div class="briefing-item">
-        <div class="b-value" id="briefGoals">0</div>
-        <div class="b-label">Active Goals</div>
+        <div class="b-value" id="briefProjects">0</div>
+        <div class="b-label">Active Projects</div>
       </div>
       <div class="briefing-item">
         <div class="b-value" id="briefWords">0</div>
@@ -263,7 +262,7 @@
       </div>
       <div class="briefing-item">
         <div class="b-value" id="briefStreak">0</div>
-        <div class="b-label">Goals Done</div>
+        <div class="b-label">Projects Done</div>
       </div>
     </div>
     <div id="briefSummary" style="font-size:13px;color:#bdc3c7;line-height:1.6;"></div>
@@ -284,12 +283,33 @@
     </div>
   </div>
 
+  <!-- Quick Research -->
+  <div class="card">
+    <h3>&#128270; Quick Research</h3>
+    <div class="form-row">
+      <input type="text" id="researchQuery" placeholder="e.g. medieval sword types, self-publishing trends 2026" style="flex:1;">
+      <button id="btnResearch">Search</button>
+    </div>
+    <div id="researchResults" style="margin-top:10px;display:none;">
+      <div id="researchResultsList"></div>
+    </div>
+  </div>
+
+  <!-- Agent Report -->
+  <div class="card">
+    <h3>&#129302; Agent Report</h3>
+    <div id="agentReportContent">
+      <div style="text-align:center;padding:12px;color:#7f8c8d;">Loading agent status...</div>
+    </div>
+    <div id="agentJournalEntries" style="margin-top:10px;max-height:240px;overflow-y:auto;display:none;"></div>
+  </div>
+
   <!-- Recent Activity / Director's Log -->
   <div class="card">
     <h3>&#128240; Recent Activity</h3>
     <div id="homeActivity">
       <div style="text-align:center;padding:20px;color:#7f8c8d;">
-        <p>No recent activity. Create a goal or start a conversation to get going!</p>
+        <p>No recent activity. Create a project or start a conversation to get going!</p>
       </div>
     </div>
   </div>
@@ -362,7 +382,7 @@
   <!-- Agent Behavior (merged Heartbeat + Autonomous) -->
   <div class="card">
     <h3>&#129302; Agent Behavior</h3>
-    <p class="hint" style="margin-bottom:12px;">When enabled, AuthorClaw wakes up on schedule, checks for active goals, and executes steps automatically. It tracks your writing progress and sends reminders to keep you on track.</p>
+    <p class="hint" style="margin-bottom:12px;">When enabled, AuthorClaw wakes up on schedule, checks for active projects, and executes steps automatically. It tracks your writing progress and sends reminders to keep you on track.</p>
 
     <div class="toggle-wrap" style="margin-bottom:16px;">
       <label class="toggle">
@@ -385,7 +405,7 @@
       <div class="form-group">
         <label>Max Steps Per Wake</label>
         <input type="number" id="autonomousMaxSteps" min="1" max="50" placeholder="5">
-        <p class="hint">Safety limit &mdash; how many goal steps per cycle (default: 5)</p>
+        <p class="hint">Safety limit &mdash; how many project steps per cycle (default: 5)</p>
       </div>
     </div>
 
@@ -504,164 +524,34 @@
 
 </div>
 
-<!-- PROJECT CONFIG TAB -->
-<div class="panel" id="panel-project">
+<!-- PROJECTS TAB -->
+<div class="panel" id="panel-projects">
 
   <div class="card">
-    <h3>&#128214; Book Project Configuration</h3>
-    <p class="hint" style="margin-bottom:16px;">Configure your book project here instead of editing code. Saved as JSON to the server.</p>
-
-    <div class="form-group">
-      <label>Project Name</label>
-      <input type="text" id="projName" placeholder="e.g. OmegaClaw">
-    </div>
-
-    <div class="form-group-inline">
-      <div class="form-group">
-        <label>Genre</label>
-        <select id="projGenre">
-          <option value="">-- Select Genre --</option>
-          <option value="Thriller">Thriller</option>
-          <option value="Fantasy">Fantasy</option>
-          <option value="Romance">Romance</option>
-          <option value="Sci-Fi">Sci-Fi</option>
-          <option value="Mystery">Mystery</option>
-          <option value="Horror">Horror</option>
-          <option value="Historical Fiction">Historical Fiction</option>
-          <option value="Literary Fiction">Literary Fiction</option>
-          <option value="Young Adult">Young Adult (YA)</option>
-          <option value="Memoir">Memoir</option>
-          <option value="Self-Help">Self-Help</option>
-          <option value="Nonfiction">Nonfiction</option>
-          <option value="Custom">Custom</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>POV</label>
-        <select id="projPOV">
-          <option value="">-- Select POV --</option>
-          <option value="First Person">First Person</option>
-          <option value="Third Person Limited">Third Person Limited</option>
-          <option value="Third Person Omniscient">Third Person Omniscient</option>
-          <option value="Second Person">Second Person</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="form-group">
-      <label>Logline</label>
-      <textarea id="projLogline" rows="3" placeholder="2-3 sentence hook for your story..."></textarea>
-    </div>
-
-    <div class="form-group-inline">
-      <div class="form-group">
-        <label>Setting</label>
-        <input type="text" id="projSetting" placeholder="e.g. Near-future San Francisco">
-      </div>
-      <div class="form-group">
-        <label>Tone</label>
-        <input type="text" id="projTone" placeholder="e.g. Dark, propulsive, technically authentic">
-      </div>
-    </div>
-
-    <div class="form-group-inline">
-      <div class="form-group">
-        <label>Tense</label>
-        <select id="projTense">
-          <option value="">-- Select Tense --</option>
-          <option value="Past">Past</option>
-          <option value="Present">Present</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Themes</label>
-        <input type="text" id="projThemes" placeholder="Comma separated, e.g. Identity, Power, Trust">
-      </div>
-    </div>
-
-    <div class="form-group-inline">
-      <div class="form-group">
-        <label>Target Chapters</label>
-        <input type="number" id="projChapters" min="1" max="200" value="25">
-      </div>
-      <div class="form-group">
-        <label>Target Words Per Chapter</label>
-        <input type="number" id="projWordsPerChapter" min="100" max="20000" value="3500">
-      </div>
-    </div>
-
-    <div class="form-group">
-      <label>Character Seed <span style="color:#7f8c8d">(optional)</span></label>
-      <textarea id="projCharacter" rows="4" placeholder="Protagonist description: name, age, background, motivation, conflict..."></textarea>
-    </div>
-
-    <div style="display:flex;gap:10px;flex-wrap:wrap;">
-      <button class="success" id="btnSaveProject">Save Project Config</button>
-      <button class="secondary" id="btnLoadProject">Load From Server</button>
-      <button class="danger" id="btnClearProject">Clear Form</button>
-    </div>
-    <div id="projectStatus" class="hint" style="margin-top:8px;"></div>
-
-    <hr class="section-divider" style="margin:20px 0;">
-
-    <!-- Saved Config Templates -->
-    <h3 style="color:#e67e22;font-size:14px;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">&#128194; Saved Configurations</h3>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
-      <select id="configTemplateSelect" style="min-width:200px;">
-        <option value="">-- Load a saved config --</option>
-      </select>
-      <button class="secondary" id="btnLoadConfigTemplate">Load</button>
-      <button class="success" id="btnSaveConfigTemplate">Save Current As...</button>
-      <button class="danger" id="btnDeleteConfigTemplate" style="font-size:12px;padding:5px 12px;">Delete</button>
-    </div>
-  </div>
-
-  <!-- Conductor Controls -->
-  <div class="card">
-    <h3>&#127916; Book Conductor</h3>
-    <p class="hint" style="margin-bottom:12px;">The conductor writes your book autonomously through all phases: premise, book bible, outline, writing, revision, and assembly. Make sure your project config is saved first.</p>
-
-    <div id="conductorStatusBanner" style="background:#1a1a2e;border:1px solid #0f3460;border-radius:8px;padding:12px;margin-bottom:14px;font-size:14px;">
-      <span id="conductorStatusText" style="color:#7f8c8d;">Conductor: Idle</span>
-    </div>
-
-    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-      <button class="success" id="btnStartConductor">&#9654;&#65039; Start Conductor</button>
-      <button class="danger" id="btnStopConductor">&#9632; Stop Conductor</button>
-    </div>
-    <p id="conductorHint" class="hint" style="margin-top:8px;text-align:center;"></p>
-  </div>
-
-</div>
-
-<!-- GOALS TAB -->
-<div class="panel" id="panel-goals">
-
-  <div class="card">
-    <h3>&#127919; Create a Goal</h3>
+    <h3>&#128203; Create a Project</h3>
     <p class="hint" style="margin-bottom:12px;">Tell AuthorClaw what you want to achieve. It will autonomously plan the steps, choose the right tools and prompts, and execute them.</p>
 
     <div class="form-group">
       <label>What do you want to accomplish?</label>
-      <textarea id="goalDescription" rows="3" placeholder="e.g. Plan a sci-fi novel about time travel, or Write marketing copy for my fantasy book, or Analyze my writing style from Chapter 1..."></textarea>
+      <textarea id="projectDescription" rows="3" placeholder="e.g. Plan a sci-fi novel about time travel, or Write marketing copy for my fantasy book, or Analyze my writing style from Chapter 1..."></textarea>
     </div>
     <div class="form-group">
-      <label>Goal Title <span style="color:#7f8c8d">(optional &mdash; auto-generated if blank)</span></label>
-      <input type="text" id="goalTitle" placeholder="e.g. Plan my time travel novel">
+      <label>Project Title <span style="color:#7f8c8d">(optional &mdash; auto-generated if blank)</span></label>
+      <input type="text" id="projectTitle" placeholder="e.g. Plan my time travel novel">
     </div>
-    <button class="success" id="btnCreateGoal">Create Goal</button>
-    <p class="hint" style="margin-top:8px;">AuthorClaw will auto-detect the goal type and create a step-by-step plan.</p>
+    <button class="success" id="btnCreateProject">Create Project</button>
+    <p class="hint" style="margin-top:8px;">AuthorClaw will auto-detect the project type and create a step-by-step plan.</p>
   </div>
 
   <div class="card">
-    <h3>&#128203; Goal Templates</h3>
-    <p class="hint" style="margin-bottom:12px;">Or choose a pre-built goal template:</p>
-    <div class="goal-templates-grid" id="goalTemplates"><span style="color:#7f8c8d">Loading templates...</span></div>
+    <h3>&#128203; Project Templates</h3>
+    <p class="hint" style="margin-bottom:12px;">Or choose a pre-built project template:</p>
+    <div class="project-templates-grid" id="projectTemplates"><span style="color:#7f8c8d">Loading templates...</span></div>
   </div>
 
   <div class="card">
-    <h3>&#128195; Active Goals</h3>
-    <div id="goalList"><span style="color:#7f8c8d">No goals yet. Create one above!</span></div>
+    <h3>&#128195; Active Projects</h3>
+    <div id="projectList"><span style="color:#7f8c8d">No projects yet. Create one above!</span></div>
   </div>
 
 </div>
@@ -1144,78 +1034,12 @@ document.getElementById('btnResetMemory').addEventListener('click', function() {
 document.getElementById('btnFullResetMemory').addEventListener('click', function() { doMemoryReset(true); });
 
 // ══════════════════════════════════════════════════════════════
-// PROJECT CONFIG TAB
+// PROJECTS TAB
 // ══════════════════════════════════════════════════════════════
 
-var projectFields = [
-  { id: 'projName', key: 'name' },
-  { id: 'projGenre', key: 'genre' },
-  { id: 'projLogline', key: 'logline' },
-  { id: 'projSetting', key: 'setting' },
-  { id: 'projTone', key: 'tone' },
-  { id: 'projPOV', key: 'pov' },
-  { id: 'projTense', key: 'tense' },
-  { id: 'projChapters', key: 'targetChapters', type: 'int' },
-  { id: 'projWordsPerChapter', key: 'targetWordsPerChapter', type: 'int' },
-  { id: 'projThemes', key: 'themes' },
-  { id: 'projCharacter', key: 'characterSeed' }
-];
-
-function getProjectData() {
-  var data = {};
-  projectFields.forEach(function(f) {
-    var el = document.getElementById(f.id);
-    var val = el.value;
-    if (f.type === 'int') val = parseInt(val) || 0;
-    if (val !== '' && val !== 0) data[f.key] = val;
-  });
-  return data;
-}
-
-function setProjectData(data) {
-  if (!data || typeof data !== 'object') return;
-  projectFields.forEach(function(f) {
-    var el = document.getElementById(f.id);
-    if (data[f.key] !== undefined && data[f.key] !== null) el.value = data[f.key];
-  });
-}
-
-document.getElementById('btnSaveProject').addEventListener('click', function() {
-  var data = getProjectData();
-  if (!data.name) { showToast('Project name is required', 'error'); return; }
-  var statusEl = document.getElementById('projectStatus');
-  statusEl.textContent = 'Saving...'; statusEl.style.color = '#f39c12';
-  api('POST', '/api/conductor/config', data).then(function() {
-    showToast('Project config saved!', 'success');
-    statusEl.textContent = 'Saved at ' + new Date().toLocaleTimeString();
-    statusEl.style.color = '#27ae60';
-  }).catch(function(e) {
-    showToast('Failed: ' + e.message, 'error');
-    statusEl.textContent = 'Error: ' + e.message; statusEl.style.color = '#e74c3c';
-  });
-});
-
-document.getElementById('btnLoadProject').addEventListener('click', function() { loadProjectConfig(); });
-
-function loadProjectConfig() {
-  var statusEl = document.getElementById('projectStatus');
-  statusEl.textContent = 'Loading...'; statusEl.style.color = '#f39c12';
-  api('GET', '/api/conductor/config').then(function(data) {
-    setProjectData(data);
-    statusEl.textContent = 'Loaded from server'; statusEl.style.color = '#27ae60';
-    showToast('Project config loaded', 'success');
-  }).catch(function(e) {
-    statusEl.textContent = 'No config found'; statusEl.style.color = '#7f8c8d';
-  });
-}
-
-// ══════════════════════════════════════════════════════════════
-// GOALS TAB
-// ══════════════════════════════════════════════════════════════
-
-function loadGoalTemplates() {
-  api('GET', '/api/goals/templates').then(function(data) {
-    var el = document.getElementById('goalTemplates');
+function loadProjectTemplates() {
+  api('GET', '/api/projects/templates').then(function(data) {
+    var el = document.getElementById('projectTemplates');
     if (!data.templates || data.templates.length === 0) {
       el.innerHTML = '<span style="color:#7f8c8d;">No templates available</span>';
       return;
@@ -1223,7 +1047,7 @@ function loadGoalTemplates() {
     el.innerHTML = '';
     data.templates.forEach(function(t) {
       var card = document.createElement('div');
-      card.className = 'goal-template';
+      card.className = 'project-template';
       var titleHtml = '<div class="gt-title">' + esc(t.label || t.title) + '</div>';
       var descHtml = '<div class="gt-desc">' + esc(t.description) + '</div>';
       var stepsHtml = t.stepCount ? '<div class="gt-steps">' + t.stepCount + ' steps</div>' : '';
@@ -1237,52 +1061,52 @@ function loadGoalTemplates() {
           ev.stopPropagation();
           var tid = ev.target.getAttribute('data-id');
           if (confirm('Delete this custom template?')) {
-            api('DELETE', '/api/goals/templates/' + tid).then(function() {
+            api('DELETE', '/api/projects/templates/' + tid).then(function() {
               showToast('Template deleted', 'info');
-              loadGoalTemplates();
+              loadProjectTemplates();
             }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
           }
           return;
         }
-        document.getElementById('goalDescription').value = t.description;
-        document.getElementById('goalTitle').value = t.label || t.title;
-        document.getElementById('goalDescription').focus();
-        showToast('Template loaded! Edit the description and click Create Goal.', 'info');
+        document.getElementById('projectDescription').value = t.description;
+        document.getElementById('projectTitle').value = t.label || t.title;
+        document.getElementById('projectDescription').focus();
+        showToast('Template loaded! Edit and click Create Project.', 'info');
         window.scrollTo({ top: 0, behavior: 'smooth' });
       });
       el.appendChild(card);
     });
   }).catch(function() {
-    document.getElementById('goalTemplates').innerHTML = '<span style="color:#7f8c8d;">Could not load templates</span>';
+    document.getElementById('projectTemplates').innerHTML = '<span style="color:#7f8c8d;">Could not load templates</span>';
   });
 }
 
-document.getElementById('btnCreateGoal').addEventListener('click', function() {
-  var description = document.getElementById('goalDescription').value.trim();
+document.getElementById('btnCreateProject').addEventListener('click', function() {
+  var description = document.getElementById('projectDescription').value.trim();
   if (!description) { showToast('Describe what you want to accomplish', 'error'); return; }
-  var title = document.getElementById('goalTitle').value.trim() || description.slice(0, 60);
+  var title = document.getElementById('projectTitle').value.trim() || description.slice(0, 60);
 
-  api('POST', '/api/goals', { title: title, description: description }).then(function(data) {
-    showToast('Goal created with ' + data.goal.steps.length + ' steps!', 'success');
-    document.getElementById('goalDescription').value = '';
-    document.getElementById('goalTitle').value = '';
-    loadGoals();
+  api('POST', '/api/projects/create', { title: title, description: description, planning: 'dynamic' }).then(function(data) {
+    showToast('Project created with ' + data.project.steps.length + ' steps!', 'success');
+    document.getElementById('projectDescription').value = '';
+    document.getElementById('projectTitle').value = '';
+    loadProjects();
   }).catch(function(e) {
     showToast('Failed: ' + e.message, 'error');
   });
 });
 
-function loadGoals() {
-  api('GET', '/api/goals').then(function(data) {
-    var el = document.getElementById('goalList');
-    if (!data.goals || data.goals.length === 0) {
-      el.innerHTML = '<span style="color:#7f8c8d;">No goals yet. Create one above!</span>';
+function loadProjects() {
+  api('GET', '/api/projects/list').then(function(data) {
+    var el = document.getElementById('projectList');
+    if (!data.projects || data.projects.length === 0) {
+      el.innerHTML = '<span style="color:#7f8c8d;">No projects yet. Create one above!</span>';
       return;
     }
     el.innerHTML = '';
-    data.goals.forEach(function(g) {
+    data.projects.forEach(function(g) {
       var item = document.createElement('div');
-      item.className = 'goal-item';
+      item.className = 'project-item';
 
       // Header
       var header = document.createElement('div');
@@ -1303,10 +1127,23 @@ function loadGoals() {
       progressWrap.innerHTML = '<div class="progress-bar" style="height:16px;"><div class="progress-fill" style="width:' + g.progress + '%;font-size:11px;">' + g.progress + '%</div></div>';
       item.appendChild(progressWrap);
 
-      // Steps
+      // Steps — group by phase for novel-pipeline projects
       var stepList = document.createElement('div');
       stepList.className = 'step-list';
+      var currentPhase = '';
+      var isNovelPipeline = g.type === 'novel-pipeline';
       g.steps.forEach(function(s) {
+        // Phase header for novel pipelines
+        if (isNovelPipeline && s.phase && s.phase !== currentPhase) {
+          currentPhase = s.phase;
+          var phaseHeader = document.createElement('div');
+          var phaseNames = { premise: 'Premise', bible: 'Book Bible', outline: 'Outline', writing: 'Writing', revision: 'Revision', assembly: 'Assembly' };
+          var phaseSteps = g.steps.filter(function(ps) { return ps.phase === currentPhase; });
+          var phaseDone = phaseSteps.filter(function(ps) { return ps.status === 'completed'; }).length;
+          phaseHeader.style.cssText = 'font-size:11px;font-weight:700;color:#3498db;margin:8px 0 4px;text-transform:uppercase;letter-spacing:1px;';
+          phaseHeader.textContent = (phaseNames[currentPhase] || currentPhase) + ' (' + phaseDone + '/' + phaseSteps.length + ')';
+          stepList.appendChild(phaseHeader);
+        }
         var stepItem = document.createElement('div');
         stepItem.className = 'step-item';
         stepItem.innerHTML = '<span class="step-dot ' + esc(s.status) + '"></span>' +
@@ -1325,24 +1162,24 @@ function loadGoals() {
       if (g.status === 'pending') {
         var startBtn = document.createElement('button');
         startBtn.className = 'success'; startBtn.textContent = 'Start';
-        startBtn.addEventListener('click', function() { startGoal(g.id); });
+        startBtn.addEventListener('click', function() { startProject(g.id); });
         actions.appendChild(startBtn);
       }
 
       if (g.status === 'active') {
         var autoBtn = document.createElement('button');
         autoBtn.className = 'success'; autoBtn.textContent = '▶ Auto-Execute All';
-        autoBtn.addEventListener('click', function() { autoExecuteGoal(g.id); });
+        autoBtn.addEventListener('click', function() { autoExecuteProject(g.id); });
         actions.appendChild(autoBtn);
 
         var execBtn = document.createElement('button');
         execBtn.textContent = 'Execute Next Step';
-        execBtn.addEventListener('click', function() { executeGoalStep(g.id); });
+        execBtn.addEventListener('click', function() { executeProjectStep(g.id); });
         actions.appendChild(execBtn);
 
         var pauseBtn = document.createElement('button');
         pauseBtn.className = 'secondary'; pauseBtn.textContent = 'Pause';
-        pauseBtn.addEventListener('click', function() { pauseGoal(g.id); });
+        pauseBtn.addEventListener('click', function() { pauseProject(g.id); });
         actions.appendChild(pauseBtn);
 
         // Skip current step
@@ -1350,7 +1187,7 @@ function loadGoals() {
         if (activeStep) {
           var skipBtn = document.createElement('button');
           skipBtn.className = 'secondary'; skipBtn.textContent = 'Skip Step';
-          skipBtn.addEventListener('click', function() { skipGoalStep(g.id, activeStep.id); });
+          skipBtn.addEventListener('click', function() { skipProjectStep(g.id, activeStep.id); });
           actions.appendChild(skipBtn);
         }
       }
@@ -1358,41 +1195,50 @@ function loadGoals() {
       if (g.status === 'paused') {
         var resumeAutoBtn = document.createElement('button');
         resumeAutoBtn.className = 'success'; resumeAutoBtn.textContent = '▶ Resume & Auto-Execute';
-        resumeAutoBtn.addEventListener('click', function() { autoExecuteGoal(g.id); });
+        resumeAutoBtn.addEventListener('click', function() { autoExecuteProject(g.id); });
         actions.appendChild(resumeAutoBtn);
       }
 
       if (g.status === 'completed') {
         var saveTemplateBtn = document.createElement('button');
         saveTemplateBtn.className = 'secondary'; saveTemplateBtn.textContent = 'Save as Template';
-        saveTemplateBtn.addEventListener('click', function() { saveGoalAsTemplate(g); });
+        saveTemplateBtn.addEventListener('click', function() { saveProjectAsTemplate(g); });
         actions.appendChild(saveTemplateBtn);
+      }
+
+      // Upload file button (for active, pending, paused projects)
+      if (g.status !== 'completed') {
+        var uploadBtn = document.createElement('button');
+        uploadBtn.className = 'secondary'; uploadBtn.textContent = '\u{1F4CE} Upload';
+        uploadBtn.title = 'Upload a .txt, .md, or .docx file to this project';
+        uploadBtn.addEventListener('click', function() { triggerProjectUpload(g.id); });
+        actions.appendChild(uploadBtn);
       }
 
       var deleteBtn = document.createElement('button');
       deleteBtn.className = 'danger'; deleteBtn.textContent = 'Delete';
-      deleteBtn.addEventListener('click', function() { deleteGoal(g.id); });
+      deleteBtn.addEventListener('click', function() { deleteProject(g.id); });
       actions.appendChild(deleteBtn);
 
       item.appendChild(actions);
       el.appendChild(item);
     });
   }).catch(function(e) {
-    document.getElementById('goalList').innerHTML = '<span style="color:#e74c3c;">Error: ' + esc(e.message) + '</span>';
+    document.getElementById('projectList').innerHTML = '<span style="color:#e74c3c;">Error: ' + esc(e.message) + '</span>';
   });
 }
 
-function startGoal(id) {
-  api('POST', '/api/goals/' + id + '/start').then(function(data) {
-    showToast('Goal started! Click "Execute Next Step" to proceed.', 'success');
-    loadGoals();
+function startProject(id) {
+  api('POST', '/api/projects/' + id + '/start').then(function(data) {
+    showToast('Project started! Click "Execute Next Step" to proceed.', 'success');
+    loadProjects();
   }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
 }
 
-function autoExecuteGoal(id) {
+function autoExecuteProject(id) {
   showToast('Auto-executing all steps... this may take a while.', 'info');
   // Use a longer timeout for auto-execute (5 min)
-  fetch('/api/goals/' + id + '/auto-execute', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+  fetch('/api/projects/' + id + '/auto-execute', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.success) {
@@ -1402,170 +1248,70 @@ function autoExecuteGoal(id) {
       } else {
         showToast('Auto-execute failed: ' + (data.error || 'Unknown'), 'error');
       }
-      loadGoals();
+      loadProjects();
     })
     .catch(function(e) {
       showToast('Auto-execute error: ' + e.message, 'error');
-      loadGoals();
+      loadProjects();
     });
   // Poll for progress while auto-executing
-  var pollId = setInterval(function() { loadGoals(); }, 8000);
+  var pollId = setInterval(function() { loadProjects(); }, 8000);
   setTimeout(function() { clearInterval(pollId); }, 300000);
 }
 
-function executeGoalStep(id) {
+function executeProjectStep(id) {
   showToast('Executing step... this may take a moment.', 'info');
-  api('POST', '/api/goals/' + id + '/execute').then(function(data) {
+  api('POST', '/api/projects/' + id + '/execute').then(function(data) {
     if (data.success) {
       if (data.nextStep) {
         showToast('Step completed! Next: ' + data.nextStep.label, 'success');
       } else {
-        showToast('Goal completed!', 'success');
+        showToast('Project completed!', 'success');
       }
     } else {
       showToast('Step failed: ' + (data.error || 'Unknown error'), 'error');
     }
-    loadGoals();
+    loadProjects();
   }).catch(function(e) {
     showToast('Execution failed: ' + e.message, 'error');
-    loadGoals();
+    loadProjects();
   });
 }
 
-function pauseGoal(id) {
-  api('POST', '/api/goals/' + id + '/pause').then(function() {
-    showToast('Goal paused', 'info');
-    loadGoals();
+function pauseProject(id) {
+  api('POST', '/api/projects/' + id + '/pause').then(function() {
+    showToast('Project paused', 'info');
+    loadProjects();
   }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
 }
 
-function skipGoalStep(goalId, stepId) {
-  api('POST', '/api/goals/' + goalId + '/skip/' + stepId).then(function() {
+function skipProjectStep(projectId, stepId) {
+  api('POST', '/api/projects/' + projectId + '/skip/' + stepId).then(function() {
     showToast('Step skipped', 'info');
-    loadGoals();
+    loadProjects();
   }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
 }
 
-function deleteGoal(id) {
-  if (!confirm('Delete this goal?')) return;
-  api('DELETE', '/api/goals/' + id).then(function() {
-    showToast('Goal deleted', 'info');
-    loadGoals();
+function deleteProject(id) {
+  if (!confirm('Delete this project?')) return;
+  api('DELETE', '/api/projects/' + id).then(function() {
+    showToast('Project deleted', 'info');
+    loadProjects();
   }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
 }
 
-function saveGoalAsTemplate(goal) {
-  var title = prompt('Template name:', goal.title);
+function saveProjectAsTemplate(project) {
+  var title = prompt('Template name:', project.title);
   if (!title) return;
-  api('POST', '/api/goals/templates', {
+  api('POST', '/api/projects/templates', {
     title: title,
-    description: goal.description || goal.title,
-    type: goal.type || 'general'
+    description: project.description || project.title,
+    type: project.type || 'general'
   }).then(function() {
     showToast('Saved as template!', 'success');
-    loadGoalTemplates();
+    loadProjectTemplates();
   }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
 }
-
-// ══════════════════════════════════════════════════════════════
-// CONDUCTOR CONTROLS (in Book Launch tab)
-// ══════════════════════════════════════════════════════════════
-
-function pollConductorStatus() {
-  api('GET', '/api/conductor/running').then(function(data) {
-    var statusEl = document.getElementById('conductorStatusText');
-    var hintEl = document.getElementById('conductorHint');
-    if (data.running) {
-      // Fetch detailed status
-      api('GET', '/api/conductor/status').then(function(cond) {
-        var phase = cond.phase || 'working';
-        var p = cond.progress || {};
-        var parts = ['<span style="color:#2980b9;font-weight:700;">Running</span> &mdash; ' + esc(phase)];
-        if (cond.step) parts.push('<br><small>' + esc(cond.step) + '</small>');
-        if (p.chaptersComplete > 0) parts.push('<br>Chapters: ' + p.chaptersComplete + '/' + (p.totalChapters || 25));
-        if (p.wordCount > 0) parts.push(' | Words: ' + Number(p.wordCount).toLocaleString());
-        if (p.elapsedMs > 0) {
-          var mins = Math.floor(p.elapsedMs / 60000);
-          parts.push(' | ' + mins + ' min');
-        }
-        statusEl.innerHTML = parts.join('');
-      }).catch(function() {
-        statusEl.innerHTML = '<span style="color:#2980b9;font-weight:700;">Running</span> (PID: ' + data.pid + ')';
-      });
-      hintEl.textContent = '';
-    } else {
-      // Not running — check if there's a final status (error, stopped, complete)
-      api('GET', '/api/conductor/status').then(function(cond) {
-        var phase = cond.phase || '';
-        if (phase === 'Complete!') {
-          statusEl.innerHTML = '<span style="color:#27ae60;font-weight:700;">&#10004; Complete!</span> &mdash; ' + esc(cond.step || '');
-        } else if (phase.includes('Stopped') || phase.includes('FAILED') || phase.includes('Error')) {
-          statusEl.innerHTML = '<span style="color:#e74c3c;font-weight:700;">&#9888; ' + esc(phase) + '</span><br><small>' + esc(cond.step || '') + '</small>';
-        } else if (phase && phase !== 'starting') {
-          statusEl.innerHTML = '<span style="color:#f39c12;">Exited</span> &mdash; ' + esc(phase) + ' / ' + esc(cond.step || '');
-        } else {
-          statusEl.innerHTML = '<span style="color:#7f8c8d;">Idle</span> &mdash; Ready to launch';
-        }
-      }).catch(function() {
-        statusEl.innerHTML = '<span style="color:#7f8c8d;">Idle</span> &mdash; Ready to launch';
-      });
-      hintEl.textContent = '';
-    }
-  }).catch(function() {
-    document.getElementById('conductorStatusText').innerHTML = '<span style="color:#e74c3c;">Cannot reach server</span>';
-  });
-}
-
-// Start Conductor — sends current Book Launch form config with the launch request
-document.getElementById('btnStartConductor').addEventListener('click', function() {
-  api('GET', '/api/conductor/running').then(function(data) {
-    if (data.running) {
-      showToast('Conductor is already running (PID: ' + data.pid + ')', 'info');
-      return;
-    }
-    // Check that at least a project name is set
-    var projName = document.getElementById('projName').value.trim();
-    if (!projName) {
-      showToast('Enter a project name in Book Launch before starting the conductor.', 'error');
-      return;
-    }
-    if (!confirm('Start the conductor for "' + projName + '"? This will auto-save your config.')) return;
-    var btn = document.getElementById('btnStartConductor');
-    btn.disabled = true;
-    btn.textContent = 'Launching...';
-    // Send current form data so conductor uses the right config
-    var configData = getProjectData();
-    api('POST', '/api/conductor/launch', configData).then(function(data) {
-      btn.disabled = false;
-      btn.innerHTML = '&#9654;&#65039; Start Conductor';
-      showToast('Conductor launched for "' + projName + '"!', 'success');
-      document.getElementById('conductorHint').textContent = 'Conductor running (PID: ' + (data.pid || '?') + ')';
-      document.getElementById('conductorHint').style.color = '#27ae60';
-      pollConductorStatus();
-    }).catch(function(e) {
-      btn.disabled = false;
-      btn.innerHTML = '&#9654;&#65039; Start Conductor';
-      showToast('Failed to launch: ' + (e.message || 'Unknown error'), 'error');
-      document.getElementById('conductorHint').textContent = e.message || 'Launch failed';
-      document.getElementById('conductorHint').style.color = '#e74c3c';
-    });
-  }).catch(function() {
-    showToast('Cannot reach server', 'error');
-  });
-});
-
-// Stop Conductor
-document.getElementById('btnStopConductor').addEventListener('click', function() {
-  if (!confirm('Stop the conductor? It will finish the current step and shut down.')) return;
-  api('POST', '/api/conductor/stop').then(function() {
-    showToast('Stop signal sent!', 'success');
-    document.getElementById('conductorHint').textContent = 'Stopping...';
-    document.getElementById('conductorHint').style.color = '#f39c12';
-    setTimeout(pollConductorStatus, 3000);
-  }).catch(function(e) {
-    showToast('Could not stop: ' + e.message, 'error');
-  });
-});
 
 // ══════════════════════════════════════════════════════════════
 // AUTONOMOUS MODE
@@ -1592,7 +1338,7 @@ function loadAutonomousStatus() {
     var statusEl = document.getElementById('autonomousStatusText');
     var parts = [];
     if (data.enabled) {
-      if (data.running) parts.push('<span style="color:#2980b9;">&#128260; Currently executing a goal step...</span>');
+      if (data.running) parts.push('<span style="color:#2980b9;">&#128260; Currently executing a project step...</span>');
       else if (data.paused) parts.push('<span style="color:#f39c12;">&#9208;&#65039; Paused</span>');
       else parts.push('<span style="color:#27ae60;">&#9989; Active &mdash; next wake in ' + data.intervalMinutes + ' min</span>');
     } else {
@@ -1728,45 +1474,6 @@ function sendChatMessage() {
   input.value = '';
   input.style.height = 'auto';
 
-  // Handle /conductor command locally
-  if (text.toLowerCase().startsWith('/conductor')) {
-    chatWaiting = true;
-    addChatMessage('Checking conductor status...', 'bot');
-    api('GET', '/api/conductor/running').then(function(data) {
-      chatWaiting = false;
-      if (data.running) {
-        addChatMessage('The conductor is already running (PID: ' + data.pid + '). Check the Live Progress tab to monitor it, or use /stop to stop it.', 'bot');
-        return;
-      }
-      addChatMessage('Launching the book conductor now... Switch to the Live Progress tab to watch it work!', 'bot');
-      api('POST', '/api/conductor/launch').then(function(result) {
-        addChatMessage('Conductor launched successfully (PID: ' + (result.pid || 'unknown') + '). It will write your book autonomously through all phases: premise, book bible, outline, writing, revision, and assembly.', 'bot');
-        switchTab('project');
-      }).catch(function(e) {
-        addChatMessage('Failed to launch conductor: ' + e.message, 'bot');
-      });
-    }).catch(function() {
-      chatWaiting = false;
-      api('POST', '/api/conductor/launch').then(function() {
-        addChatMessage('Conductor launched! Switch to the Live Progress tab to watch.', 'bot');
-        switchTab('project');
-      }).catch(function(e) {
-        addChatMessage('Failed: ' + e.message, 'bot');
-      });
-    });
-    return;
-  }
-
-  // Handle /stop command locally
-  if (text.toLowerCase() === '/stop') {
-    api('POST', '/api/conductor/stop').then(function() {
-      addChatMessage('Stop signal sent to the conductor. It will finish the current step and shut down gracefully.', 'bot');
-    }).catch(function(e) {
-      addChatMessage('Could not send stop signal: ' + e.message, 'bot');
-    });
-    return;
-  }
-
   chatWaiting = true;
   showTypingIndicator();
 
@@ -1797,18 +1504,18 @@ document.getElementById('chatInput').addEventListener('keydown', function(e) {
 // Auto-resize chat input
 document.getElementById('chatInput').addEventListener('input', function() {
   this.style.height = 'auto';
-  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+  this.style.height = Math.min(this.scrollHeight, 160) + 'px';
 });
 
 // ── Morning Briefing ──
 function loadHomeBriefing() {
-  // Fetch goals — show active count AND completed count
-  api('GET', '/api/goals').then(function(data) {
-    var allGoals = data.goals || [];
-    var activeGoals = allGoals.filter(function(g) { return g.status === 'active' || g.status === 'pending'; });
-    var completedGoals = allGoals.filter(function(g) { return g.status === 'completed'; });
-    document.getElementById('briefGoals').textContent = activeGoals.length;
-    document.getElementById('briefStreak').textContent = completedGoals.length;
+  // Fetch projects — show active count AND completed count
+  api('GET', '/api/projects/list').then(function(data) {
+    var allProjects = data.projects || [];
+    var activeProjects = allProjects.filter(function(p) { return p.status === 'active' || p.status === 'pending'; });
+    var completedProjects = allProjects.filter(function(p) { return p.status === 'completed'; });
+    document.getElementById('briefProjects').textContent = activeProjects.length;
+    document.getElementById('briefStreak').textContent = completedProjects.length;
   }).catch(function() {});
 
   // Fetch autonomous status for steps/words
@@ -1855,7 +1562,7 @@ function loadHomeActivity() {
   api('GET', '/api/activity?count=10').then(function(data) {
     var el = document.getElementById('homeActivity');
     if (!data.entries || data.entries.length === 0) {
-      el.innerHTML = '<div style="text-align:center;padding:20px;color:#7f8c8d;"><p>No recent activity. Create a goal or start a conversation to get going!</p></div>';
+      el.innerHTML = '<div style="text-align:center;padding:20px;color:#7f8c8d;"><p>No recent activity. Create a project or start a conversation to get going!</p></div>';
       return;
     }
     el.innerHTML = '';
@@ -1885,20 +1592,6 @@ document.getElementById('btnChatClear').addEventListener('click', function() {
   showToast('Chat cleared', 'info');
 });
 
-// Clear Project Config Form
-document.getElementById('btnClearProject').addEventListener('click', function() {
-  if (!confirm('Clear all project config fields? This does not delete the saved config on the server.')) return;
-  projectFields.forEach(function(f) {
-    var el = document.getElementById(f.id);
-    if (el.tagName === 'SELECT') { el.selectedIndex = 0; }
-    else if (f.type === 'int') { el.value = f.key === 'targetChapters' ? '25' : (f.key === 'targetWordsPerChapter' ? '3500' : ''); }
-    else { el.value = ''; }
-  });
-  document.getElementById('projectStatus').textContent = 'Form cleared';
-  document.getElementById('projectStatus').style.color = '#7f8c8d';
-  showToast('Project config form cleared', 'info');
-});
-
 // Reset Settings to Defaults
 document.getElementById('btnResetSettings').addEventListener('click', function() {
   if (!confirm('Reset budget, heartbeat, and autonomous settings to defaults? API keys are not affected.')) return;
@@ -1925,6 +1618,161 @@ document.getElementById('btnResetSettings').addEventListener('click', function()
 });
 
 // ══════════════════════════════════════════════════════════════
+// QUICK RESEARCH
+// ══════════════════════════════════════════════════════════════
+
+document.getElementById('btnResearch').addEventListener('click', function() {
+  var query = document.getElementById('researchQuery').value.trim();
+  if (!query) { showToast('Enter a search query', 'info'); return; }
+  var btn = document.getElementById('btnResearch');
+  var resultsDiv = document.getElementById('researchResults');
+  var listDiv = document.getElementById('researchResultsList');
+  btn.disabled = true; btn.textContent = 'Searching...';
+  resultsDiv.style.display = 'block';
+  listDiv.innerHTML = '<span style="color:#7f8c8d;">Searching...</span>';
+
+  api('POST', '/api/research', { query: query, maxResults: 5 }).then(function(data) {
+    btn.disabled = false; btn.textContent = 'Search';
+    if (!data.results || data.results.length === 0) {
+      listDiv.innerHTML = '<span style="color:#f39c12;">No results from allowed domains. Try a different query.</span>';
+      if (data.blocked && data.blocked.length > 0) {
+        listDiv.innerHTML += '<br><span style="color:#7f8c8d;font-size:11px;">' + data.blocked.length + ' result(s) blocked (not on allowlist)</span>';
+      }
+      return;
+    }
+    listDiv.innerHTML = '';
+    data.results.forEach(function(r) {
+      var item = document.createElement('div');
+      item.style.cssText = 'margin-bottom:12px;padding:10px;background:#1a1a2e;border-radius:8px;border:1px solid #0f3460;';
+      var titleHtml = '<div style="font-weight:700;margin-bottom:4px;"><a href="' + esc(r.url) + '" target="_blank" style="color:#3498db;text-decoration:none;">' + esc(r.title) + '</a></div>';
+      var snippetHtml = r.snippet ? '<div style="font-size:12px;color:#bbb;margin-bottom:4px;">' + esc(r.snippet.substring(0, 200)) + '</div>' : '';
+      var textPreview = r.fullText ? '<div style="font-size:11px;color:#7f8c8d;max-height:60px;overflow:hidden;">' + esc(r.fullText.substring(0, 300)) + '...</div>' : '';
+      item.innerHTML = titleHtml + snippetHtml + textPreview;
+      listDiv.appendChild(item);
+    });
+    if (data.blocked && data.blocked.length > 0) {
+      var blockedNote = document.createElement('div');
+      blockedNote.style.cssText = 'font-size:11px;color:#7f8c8d;margin-top:8px;';
+      blockedNote.textContent = data.blocked.length + ' result(s) filtered (domain not on allowlist)';
+      listDiv.appendChild(blockedNote);
+    }
+  }).catch(function(e) {
+    btn.disabled = false; btn.textContent = 'Search';
+    listDiv.innerHTML = '<span style="color:#e74c3c;">Error: ' + esc(e.message) + '</span>';
+  });
+});
+
+document.getElementById('researchQuery').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') document.getElementById('btnResearch').click();
+});
+
+// ══════════════════════════════════════════════════════════════
+// AGENT REPORT (Home tab)
+// ══════════════════════════════════════════════════════════════
+
+function loadAgentReport() {
+  api('GET', '/api/agent/status').then(function(data) {
+    var el = document.getElementById('agentReportContent');
+    var parts = [];
+
+    // Current activity
+    var statusColor = '#7f8c8d';
+    var statusText = 'Idle';
+    if (data.running) { statusColor = '#2980b9'; statusText = 'Working...'; }
+    else if (data.enabled && !data.paused) { statusColor = '#27ae60'; statusText = 'Active'; }
+    else if (data.paused) { statusColor = '#f39c12'; statusText = 'Paused'; }
+    else { statusColor = '#7f8c8d'; statusText = 'Disabled'; }
+
+    parts.push('<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">');
+    parts.push('<span style="width:10px;height:10px;border-radius:50%;background:' + statusColor + ';display:inline-block;"></span>');
+    parts.push('<span style="font-weight:700;color:' + statusColor + ';">' + statusText + '</span>');
+    if (data.totalStepsExecuted > 0) {
+      parts.push('<span style="color:#7f8c8d;font-size:12px;margin-left:auto;">' + data.totalStepsExecuted + ' steps | ~' + (data.totalWordsGenerated || 0).toLocaleString() + ' words</span>');
+    }
+    parts.push('</div>');
+
+    el.innerHTML = parts.join('');
+
+    // Journal entries
+    return api('GET', '/api/agent/journal');
+  }).then(function(data) {
+    var journalEl = document.getElementById('agentJournalEntries');
+    if (!data.journal || data.journal.length === 0) {
+      journalEl.style.display = 'none';
+      return;
+    }
+    journalEl.style.display = 'block';
+    var typeIcons = { wake: '\u{23F0}', step: '\u{2705}', decision: '\u{1F914}', difficulty: '\u{26A0}\uFE0F', plan: '\u{1F4CB}', improve: '\u{2728}', idle: '\u{1F4A4}' };
+    var typeColors = { wake: '#3498db', step: '#27ae60', decision: '#9b59b6', difficulty: '#e74c3c', plan: '#f39c12', improve: '#2ecc71', idle: '#7f8c8d' };
+    journalEl.innerHTML = '<div style="font-size:11px;font-weight:700;color:#e67e22;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px;">Agent Journal</div>' +
+      data.journal.slice(-15).reverse().map(function(entry) {
+        var time = new Date(entry.timestamp).toLocaleTimeString();
+        var icon = typeIcons[entry.type] || '\u{1F4DD}';
+        var color = typeColors[entry.type] || '#bdc3c7';
+        return '<div style="padding:4px 0;border-bottom:1px solid #0f3460;font-size:12px;">' +
+          '<span style="color:#7f8c8d;">' + esc(time) + '</span> ' +
+          '<span>' + icon + '</span> ' +
+          '<span style="color:' + color + ';font-weight:600;font-size:11px;">' + esc(entry.type || '') + '</span> ' +
+          '<span style="color:#bdc3c7;">' + esc(entry.message) + '</span>' +
+          '</div>';
+      }).join('');
+  }).catch(function() {
+    var el = document.getElementById('agentReportContent');
+    el.innerHTML = '<span style="color:#7f8c8d;">Agent report unavailable</span>';
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// PROJECT FILE UPLOAD
+// ══════════════════════════════════════════════════════════════
+
+function triggerProjectUpload(projectId) {
+  // Create hidden file input
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.txt,.md,.docx';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+
+  input.addEventListener('change', function() {
+    if (!input.files || input.files.length === 0) { input.remove(); return; }
+    var file = input.files[0];
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('File too large (max 10MB)', 'error');
+      input.remove();
+      return;
+    }
+
+    var formData = new FormData();
+    formData.append('file', file);
+
+    showToast('Uploading ' + file.name + '...', 'info');
+
+    fetch('/api/projects/' + projectId + '/upload', {
+      method: 'POST',
+      body: formData
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      if (data.success) {
+        showToast('Uploaded ' + file.name + ' (' + (data.textLength || 0) + ' chars extracted)', 'success');
+        loadProjects();
+      } else {
+        showToast('Upload failed: ' + (data.error || 'Unknown'), 'error');
+      }
+    })
+    .catch(function(e) {
+      showToast('Upload error: ' + e.message, 'error');
+    })
+    .finally(function() {
+      input.remove();
+    });
+  });
+
+  input.click();
+}
+
+// ══════════════════════════════════════════════════════════════
 // UTILITIES & INIT
 // ══════════════════════════════════════════════════════════════
 
@@ -1934,79 +1782,28 @@ document.getElementById('btnResetSettings').addEventListener('click', function()
 });
 
 // ══════════════════════════════════════════════════════════════
-// CONFIG TEMPLATES (saved project configurations)
-// ══════════════════════════════════════════════════════════════
-
-function loadConfigTemplates() {
-  api('GET', '/api/conductor/config-templates').then(function(data) {
-    var sel = document.getElementById('configTemplateSelect');
-    sel.innerHTML = '<option value="">-- Load a saved config --</option>';
-    (data.templates || []).forEach(function(t) {
-      var opt = document.createElement('option');
-      opt.value = t.id;
-      opt.textContent = t.name;
-      sel.appendChild(opt);
-    });
-  }).catch(function() {});
-}
-
-document.getElementById('btnSaveConfigTemplate').addEventListener('click', function() {
-  var name = prompt('Name for this configuration:');
-  if (!name) return;
-  var config = getProjectData();
-  api('POST', '/api/conductor/config-templates', { name: name, config: config }).then(function() {
-    showToast('Config saved as "' + name + '"!', 'success');
-    loadConfigTemplates();
-  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
-});
-
-document.getElementById('btnLoadConfigTemplate').addEventListener('click', function() {
-  var id = document.getElementById('configTemplateSelect').value;
-  if (!id) { showToast('Select a saved config first', 'info'); return; }
-  api('GET', '/api/conductor/config-templates').then(function(data) {
-    var tmpl = (data.templates || []).find(function(t) { return t.id === id; });
-    if (tmpl && tmpl.config) {
-      setProjectData(tmpl.config);
-      showToast('Loaded "' + tmpl.name + '"', 'success');
-    }
-  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
-});
-
-document.getElementById('btnDeleteConfigTemplate').addEventListener('click', function() {
-  var id = document.getElementById('configTemplateSelect').value;
-  if (!id) { showToast('Select a config to delete', 'info'); return; }
-  if (!confirm('Delete this saved configuration?')) return;
-  api('DELETE', '/api/conductor/config-templates/' + id).then(function() {
-    showToast('Config deleted', 'info');
-    loadConfigTemplates();
-  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
-});
-
-// ══════════════════════════════════════════════════════════════
 // INITIALIZATION
 // ══════════════════════════════════════════════════════════════
 
 loadKeys();
 loadStatus();
 loadConfig();
-loadProjectConfig();
-loadConfigTemplates();
 loadTelegramStatus();
-loadGoalTemplates();
-loadGoals();
+loadProjectTemplates();
+loadProjects();
 loadAuthorOS();
 loadAutonomousStatus();
 loadHomeBriefing();
 loadHomeActivity();
-pollConductorStatus();
+loadAgentReport();
 
-// Poll status every 15s, goals every 10s, autonomous every 10s, home every 30s, conductor every 10s
+// Poll status every 15s, projects every 10s, autonomous every 10s, home every 30s
 setInterval(loadStatus, 15000);
-setInterval(loadGoals, 10000);
+setInterval(loadProjects, 10000);
 setInterval(loadAutonomousStatus, 10000);
 setInterval(loadHomeBriefing, 30000);
 setInterval(loadHomeActivity, 30000);
-setInterval(pollConductorStatus, 3000);
+setInterval(loadAgentReport, 15000);
 </script>
 </body>
 </html>

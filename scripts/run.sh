@@ -25,7 +25,6 @@ if [ -d "$SHARED" ]; then
     --exclude 'node_modules' \
     --exclude '.env' \
     --exclude 'workspace' \
-    --exclude 'conductor-output' \
     --exclude 'config/.vault' \
     --exclude 'config/user.json' \
     --exclude 'logs' \
@@ -48,7 +47,6 @@ cd "$PROJECT_DIR"
 # ── Stop any existing AuthorClaw processes ──
 echo "  [2/5] Stopping old instances..."
 pkill -f "tsx gateway/src/index.ts" 2>/dev/null && echo "  ✓ Old process killed" || echo "  ✓ No old process running"
-pkill -f "tsx scripts/book-conductor" 2>/dev/null || true
 sleep 1
 
 # ── Install / update dependencies ──
@@ -62,7 +60,7 @@ fi
 
 # ── Create required directories ──
 mkdir -p workspace/audio workspace/.config workspace/memory workspace/projects workspace/research
-mkdir -p conductor-output logs
+mkdir -p logs
 
 # ── Start AuthorClaw (background, logs to file) ──
 echo "  [4/5] Starting AuthorClaw..."
@@ -87,7 +85,6 @@ while [ $RETRIES -lt $MAX_RETRIES ]; do
     echo ""
     echo "  View log:   tail -f $LOG_FILE"
     echo "  Stop:       pkill -f 'tsx gateway/src/index.ts'"
-    echo "  Conductor:  cd ~/authorclaw && npx tsx scripts/book-conductor.ts"
     echo "  ═══════════════════════════════════"
 
     # Show TTS detection status from log

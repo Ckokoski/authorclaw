@@ -1,6 +1,6 @@
 {
   "name": "authorclaw",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "The Autonomous AI Writing Agent — An OpenClaw fork built for authors. 37+ skills, autonomous mode, Telegram control, encrypted vault, soul-driven style.",
   "main": "gateway/src/index.ts",
   "type": "module",
@@ -38,11 +38,13 @@
   "author": "Christopher Kokoski (Writing Secrets)",
   "license": "MIT",
   "dependencies": {
+    "@types/multer": "^2.0.0",
     "cors": "^2.8.5",
     "docx": "^9.6.0",
     "dotenv": "^17.3.1",
     "express": "^4.21.0",
     "helmet": "^8.0.0",
+    "multer": "^2.1.0",
     "socket.io": "^4.7.0",
     "tsx": "^4.7.0"
   },

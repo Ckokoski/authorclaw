@@ -13,6 +13,8 @@ import { join } from 'path';
 // ═══════════════════════════════════════════════════════════
 
 export type ActivityType =
+  | 'project_created'
+  | 'project_planned'
   | 'goal_created'
   | 'goal_planned'
   | 'step_started'

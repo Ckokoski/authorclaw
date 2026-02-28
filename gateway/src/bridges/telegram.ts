@@ -11,10 +11,10 @@ interface TelegramConfig {
 
 /** Handler for direct commands that interact with gateway services */
 interface CommandHandlers {
-  createGoal: (title: string, description: string) => Promise<{ id: string; steps: number }>;
-  startAndRunGoal: (goalId: string) => Promise<{ completed: string; response: string; wordCount: number; nextStep?: string } | { error: string }>;
-  autoRunGoal: (goalId: string, statusCallback: (msg: string) => Promise<void>) => Promise<void>;
-  listGoals: () => Array<{ id: string; title: string; status: string; progress: string }>;
+  createProject: (title: string, description: string, config?: Record<string, any>) => Promise<{ id: string; steps: number }>;
+  startAndRunProject: (projectId: string) => Promise<{ completed: string; response: string; wordCount: number; nextStep?: string } | { error: string }>;
+  autoRunProject: (projectId: string, statusCallback: (msg: string) => Promise<void>) => Promise<void>;
+  listProjects: () => Array<{ id: string; title: string; status: string; progress: string }>;
   saveToFile: (filename: string, content: string) => Promise<void>;
   handleMessage: (content: string, channel: string, respond: (text: string) => void) => Promise<void>;
   research: (query: string) => Promise<{ results: string; error?: string }>;
@@ -120,45 +120,43 @@ export class TelegramBridge {
         `✍️ Hey ${userName}! I'm AuthorClaw.\n\n` +
         `Tell me what to do and I'll figure out the steps.\n\n` +
         `*Commands:*\n` +
-        `/conductor — Launch the book conductor\n` +
-        `/goal [task] — Plan & auto-execute a task\n` +
+        `/novel [idea] — Start a full novel pipeline\n` +
+        `/project [task] — Plan & auto-execute a task\n` +
         `/write [idea] — Plan & write a book\n` +
-        `/goals — List all goals\n` +
-        `/status — Status (conductor + goals)\n` +
+        `/projects — List all projects\n` +
+        `/status — Project status\n` +
         `/research [topic] — Research a topic\n` +
         `/files — List files (numbered)\n` +
         `/read [# or name] — Read a file\n` +
         `/export [# or name] — Export to Word/EPUB/PDF\n` +
-        `/stop — Stop everything\n` +
-        `/stop goal — Stop goal only\n` +
-        `/stop conductor — Stop conductor only\n\n` +
+        `/stop — Stop/pause active project\n\n` +
         `Or just chat with me.`);
       return;
     }
 
-    // ── /conductor — Launch the book conductor pipeline ──
-    if (text.startsWith('/conductor')) {
-      try {
-        // Check if already running
-        const runningRes = await fetch('http://localhost:3847/api/conductor/running');
-        const runningData = await runningRes.json() as any;
-        if (runningData.running) {
-          await this.sendMessage(chatId, `🎼 Conductor is already running (PID: ${runningData.pid}).\nUse /stop to shut it down, or check the dashboard Live Progress tab.`);
-          return;
+    // ── /novel — Create a novel-pipeline project (replaces /conductor) ──
+    // Also accept /conductor as alias for backward compatibility
+    if (text.startsWith('/novel') || text.startsWith('/conductor')) {
+      const idea = text.replace(/^\/(novel|conductor)\s*/, '').trim();
+      if (!idea) {
+        await this.sendMessage(chatId, `What novel should I write?\n/novel a sci-fi thriller about rogue AI\n/novel a cozy mystery set in a bookshop`);
+        return;
+      }
+      if (this.commandHandlers) {
+        try {
+          const result = await this.commandHandlers.createProject(idea, `Write a complete novel: ${idea}`);
+          await this.sendMessage(chatId,
+            `📖 Novel pipeline created: "${idea}"\n` +
+            `${result.steps} steps (premise → bible → outline → chapters → revision → assembly)\n\n` +
+            `Starting autonomous execution...`
+          );
+          // Auto-run the pipeline
+          this.commandHandlers.autoRunProject(result.id, async (msg: string) => {
+            await this.sendMessage(chatId, msg);
+          });
+        } catch (e) {
+          await this.sendMessage(chatId, `❌ ${String(e)}`);
         }
-
-        await this.sendMessage(chatId, `🎼 Launching the book conductor...\nIt will write your configured project through all phases: premise → book bible → outline → writing → revision → assembly.`);
-
-        const launchRes = await fetch('http://localhost:3847/api/conductor/launch', { method: 'POST' });
-        const launchData = await launchRes.json() as any;
-
-        if (launchData.success) {
-          await this.sendMessage(chatId, `✅ Conductor launched (PID: ${launchData.pid})!\n\n📊 Watch progress: http://localhost:3847 → Live Progress tab\nUse /stop to halt it gracefully.`);
-        } else {
-          await this.sendMessage(chatId, `❌ ${launchData.error || 'Failed to launch conductor'}`);
-        }
-      } catch (e) {
-        await this.sendMessage(chatId, `❌ Could not reach AuthorClaw: ${String(e)}`);
       }
       return;
     }
@@ -174,11 +172,11 @@ export class TelegramBridge {
       if (this.commandHandlers) {
         await this.sendMessage(chatId, `📝 On it. Planning "${idea}"...\nI'll figure out the steps and run them automatically.`);
         try {
-          const goal = await this.commandHandlers.createGoal(idea, `Write a book: ${idea}`);
-          await this.sendMessage(chatId, `✅ Planned ${goal.steps} steps. Running autonomously...`);
+          const project = await this.commandHandlers.createProject(idea, `Write a book: ${idea}`);
+          await this.sendMessage(chatId, `✅ Planned ${project.steps} steps. Running autonomously...`);
 
           // Auto-run ALL steps
-          await this.commandHandlers.autoRunGoal(goal.id, async (msg) => {
+          await this.commandHandlers.autoRunProject(project.id, async (msg) => {
             await this.sendMessage(chatId, msg);
           });
         } catch (e) {
@@ -188,44 +186,44 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /goals — List active goals (MUST be before /goal to avoid parsing as "/goal s") ──
-    if (text === '/goals' || text.startsWith('/goals ')) {
+    // ── /projects — List active projects (MUST be before /project to avoid parsing as "/project s") ──
+    if (text === '/projects' || text.startsWith('/projects ') || text === '/goals' || text.startsWith('/goals ')) {
       if (this.commandHandlers) {
-        const goals = this.commandHandlers.listGoals();
-        if (goals.length === 0) {
-          await this.sendMessage(chatId, `No goals yet. Create one with /goal or /write`);
+        const projects = this.commandHandlers.listProjects();
+        if (projects.length === 0) {
+          await this.sendMessage(chatId, `No projects yet. Create one with /project or /write`);
         } else {
-          const list = goals.map(g =>
-            `${g.status === 'completed' ? '✅' : g.status === 'active' ? '🔄' : g.status === 'failed' ? '❌' : '⏸'} ${g.title} (${g.progress})`
+          const list = projects.map(p =>
+            `${p.status === 'completed' ? '✅' : p.status === 'active' ? '🔄' : p.status === 'failed' ? '❌' : '⏸'} ${p.title} (${p.progress})`
           ).join('\n');
-          await this.sendMessage(chatId, `📋 *Goals:*\n${list}`);
+          await this.sendMessage(chatId, `📋 *Projects:*\n${list}`);
         }
       }
       return;
     }
 
-    // ── /goal — Create ANY goal and AUTO-RUN all steps ──
-    if (text.startsWith('/goal ') || text === '/goal') {
-      const description = text.replace(/^\/goal\s*/, '').trim();
+    // ── /project — Create ANY project and AUTO-RUN all steps ──
+    if (text.startsWith('/project ') || text === '/project' || text.startsWith('/goal ') || text === '/goal') {
+      const description = text.replace(/^\/(project|goal)\s*/, '').trim();
       if (!description) {
         await this.sendMessage(chatId,
           `📋 Tell me what to do:\n` +
-          `/goal write a full tech-thriller from start to finish\n` +
-          `/goal research medieval weapons for my fantasy novel\n` +
-          `/goal revise chapters 1-3 for pacing\n` +
-          `/goal create marketing materials for my book`);
+          `/project write a full tech-thriller from start to finish\n` +
+          `/project research medieval weapons for my fantasy novel\n` +
+          `/project revise chapters 1-3 for pacing\n` +
+          `/project create marketing materials for my book`);
         return;
       }
 
       if (this.commandHandlers) {
         try {
           await this.sendMessage(chatId, `🧠 Planning "${description}"...`);
-          const goal = await this.commandHandlers.createGoal(description, description);
+          const project = await this.commandHandlers.createProject(description, description);
           await this.sendMessage(chatId,
-            `✅ Planned ${goal.steps} steps. Running autonomously...`);
+            `✅ Planned ${project.steps} steps. Running autonomously...`);
 
           // Auto-run ALL steps
-          await this.commandHandlers.autoRunGoal(goal.id, async (msg) => {
+          await this.commandHandlers.autoRunProject(project.id, async (msg) => {
             await this.sendMessage(chatId, msg);
           });
         } catch (e) {
@@ -235,46 +233,28 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /status — Quick status (includes conductor + goals) ──
+    // ── /status — Quick project status ──
     if (text.startsWith('/status')) {
       let summary = '';
 
-      // Check conductor status
-      try {
-        const condRes = await fetch('http://localhost:3847/api/conductor/status');
-        const cond = await condRes.json() as any;
-        if (cond.phase && cond.phase !== 'idle') {
-          summary += `🎼 *Conductor:* ${cond.phase}\n`;
-          if (cond.step) summary += `   ${cond.step}\n`;
-          if (cond.progress) {
-            const p = cond.progress;
-            if (p.chaptersComplete > 0) {
-              summary += `   📖 ${p.chaptersComplete}/${p.totalChapters || 25} chapters`;
-              if (p.wordCount) summary += ` (${Number(p.wordCount).toLocaleString()} words)`;
-              summary += '\n';
-            }
-            if (p.elapsedMs) {
-              summary += `   ⏱ ${Math.round(p.elapsedMs / 60000)} min elapsed\n`;
-            }
-          }
-        }
-      } catch { /* conductor endpoint unavailable */ }
-
-      // Check goal engine status
       if (this.commandHandlers) {
-        const goals = this.commandHandlers.listGoals();
-        const active = goals.filter(g => g.status === 'active');
-        const completed = goals.filter(g => g.status === 'completed');
+        const projects = this.commandHandlers.listProjects();
+        const active = projects.filter(p => p.status === 'active');
+        const paused = projects.filter(p => p.status === 'paused');
+        const completed = projects.filter(p => p.status === 'completed');
 
         if (active.length > 0) {
-          summary += `🔄 ${active.length} goal(s) running:\n` + active.map(g => `  • ${g.title} (${g.progress})`).join('\n') + '\n';
+          summary += `🔄 ${active.length} project(s) running:\n` + active.map(p => `  • ${p.title} (${p.progress})`).join('\n') + '\n';
+        }
+        if (paused.length > 0) {
+          summary += `⏸ ${paused.length} project(s) paused:\n` + paused.map(p => `  • ${p.title} (${p.progress})`).join('\n') + '\n';
         }
         if (completed.length > 0) {
-          summary += `✅ ${completed.length} goal(s) done\n`;
+          summary += `✅ ${completed.length} project(s) done\n`;
         }
       }
 
-      if (!summary) summary = 'Nothing running. Use /goal or /conductor to start.\n';
+      if (!summary) summary = 'Nothing running. Use /project or /novel to start.\n';
       await this.sendMessage(chatId, summary + `\n📊 Dashboard: http://localhost:3847`);
       return;
     }
@@ -433,49 +413,20 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /stop — Stop conductor, goal, or both. Supports: /stop, /stop goal, /stop conductor ──
+    // ── /stop — Pause active project ──
     if (text.startsWith('/stop') || text.startsWith('/pause')) {
-      const arg = text.replace(/^\/(stop|pause)\s*/, '').trim().toLowerCase();
-      let stoppedSomething = false;
-
-      // Check what's running
-      let conductorRunning = false;
-      try {
-        const runningRes = await fetch('http://localhost:3847/api/conductor/running');
-        const runningData = await runningRes.json() as any;
-        conductorRunning = runningData.running;
-      } catch { /* silent */ }
-
-      const activeGoal = this.commandHandlers
-        ? this.commandHandlers.listGoals().find(g => g.status === 'active')
+      const activeProject = this.commandHandlers
+        ? this.commandHandlers.listProjects().find(p => p.status === 'active')
         : undefined;
 
-      // Stop conductor (if requested or no specific target)
-      if (conductorRunning && (arg === '' || arg === 'conductor' || arg === 'cond')) {
-        await fetch('http://localhost:3847/api/conductor/stop', { method: 'POST' });
-        await this.sendMessage(chatId, `🛑 Stop signal sent to conductor.`);
-        stoppedSomething = true;
-      }
-
-      // Pause active goal (if requested or no specific target)
-      if (activeGoal && (arg === '' || arg === 'goal' || arg === 'goals')) {
+      if (activeProject) {
         this.pauseRequested = true;
-        // Actually pause in the goal engine via API (not just a bridge flag)
         try {
-          await fetch(`http://localhost:3847/api/goals/${activeGoal.id}/pause`, { method: 'POST' });
+          await fetch(`http://localhost:3847/api/projects/${activeProject.id}/pause`, { method: 'POST' });
         } catch { /* silent */ }
-        await this.sendMessage(chatId, `⏸ Paused "${activeGoal.title}". Say "continue" to resume.`);
-        stoppedSomething = true;
-      }
-
-      if (!stoppedSomething) {
-        if (arg === 'conductor' && !conductorRunning) {
-          await this.sendMessage(chatId, `Conductor is not running.`);
-        } else if (arg === 'goal' && !activeGoal) {
-          await this.sendMessage(chatId, `No active goals to stop.`);
-        } else {
-          await this.sendMessage(chatId, `Nothing running right now.`);
-        }
+        await this.sendMessage(chatId, `⏸ Paused "${activeProject.title}". Say "continue" to resume.`);
+      } else {
+        await this.sendMessage(chatId, `Nothing running right now.`);
       }
       return;
     }
@@ -484,16 +435,16 @@ export class TelegramBridge {
     const lower = text.toLowerCase().trim();
     if (lower === 'continue' || lower === 'next' || lower === 'go' || lower === 'resume') {
       if (this.commandHandlers) {
-        const goals = this.commandHandlers.listGoals();
-        const active = goals.find(g => g.status === 'active' || g.status === 'paused');
+        const projects = this.commandHandlers.listProjects();
+        const active = projects.find(p => p.status === 'active' || p.status === 'paused');
         if (!active) {
-          await this.sendMessage(chatId, `No goals to continue. Create one with /goal or /write`);
+          await this.sendMessage(chatId, `No projects to continue. Create one with /project or /write`);
           return;
         }
         this.pauseRequested = false;
         await this.sendMessage(chatId, `▶️ Resuming "${active.title}"...`);
         try {
-          await this.commandHandlers.autoRunGoal(active.id, async (msg) => {
+          await this.commandHandlers.autoRunProject(active.id, async (msg) => {
             await this.sendMessage(chatId, msg);
           });
         } catch (e) {

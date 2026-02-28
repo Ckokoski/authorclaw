@@ -144,8 +144,5 @@ Write-Host "    curl -s -X POST http://localhost:3847/api/vault \"
 Write-Host "      -H 'Content-Type: application/json' \"
 Write-Host "      -d '{""key"":""gemini_api_key"",""value"":""'`$(cat /media/sf_authorclaw-transfer/key.txt)'""}'"
 Write-Host ""
-Write-Host "    # Run book conductor:"
-Write-Host "    cd ~/authorclaw && npx tsx scripts/book-conductor.ts"
-Write-Host ""
 Write-Host "  =======================================" -ForegroundColor Cyan
 Write-Host ""

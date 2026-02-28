@@ -1,8 +1,8 @@
 /**
  * AuthorClaw Heartbeat Service
- * Writing session tracker, goal monitor, deadline alerts, milestone celebrations
+ * Writing session tracker, project monitor, deadline alerts, milestone celebrations
  *
- * v2.1: Autonomous mode — wakes up on schedule, checks for active goals,
+ * v2.1: Autonomous mode — wakes up on schedule, checks for active projects,
  * and executes the next step automatically. The writing agent that works
  * while you sleep (but respects your quiet hours).
  */
@@ -30,23 +30,44 @@ interface HeartbeatConfig {
 }
 
 /**
- * Callback type for autonomous goal execution.
- * Injected by the gateway so heartbeat can trigger goal steps
- * without importing the goal engine or AI router directly.
+ * Callback type for autonomous project execution.
+ * Injected by the gateway so heartbeat can trigger project steps
+ * without importing the project engine or AI router directly.
  */
-export type AutonomousRunFunc = (goalId: string) => Promise<
+export type AutonomousRunFunc = (projectId: string) => Promise<
   { completed: string; response: string; wordCount: number; nextStep?: string } | { error: string }
 >;
 
-export type AutonomousGoalListFunc = () => Array<{
+export type AutonomousProjectListFunc = () => Array<{
   id: string;
   title: string;
   status: string;
   progress: string;
+  progressNum: number;
   stepsRemaining: number;
+  type: string;
 }>;
 
 export type StatusBroadcastFunc = (message: string) => void;
+
+export type AnalyzeProjectFunc = (projectId: string) => Promise<{
+  insights: string[];
+  strengths: string[];
+  weaknesses: string[];
+} | null>;
+
+export type CreateFollowUpProjectFunc = (
+  originalProjectId: string,
+  originalTitle: string,
+  originalType: string
+) => Promise<string | null>;
+
+export interface AgentJournalEntry {
+  timestamp: string;
+  type: 'wake' | 'step' | 'decision' | 'difficulty' | 'plan' | 'improve' | 'idle';
+  message: string;
+  metadata?: Record<string, any>;
+}
 
 export class HeartbeatService {
   private config: HeartbeatConfig;
@@ -60,11 +81,13 @@ export class HeartbeatService {
 
   // Autonomous mode
   private autonomousRunStep: AutonomousRunFunc | null = null;
-  private autonomousListGoals: AutonomousGoalListFunc | null = null;
+  private autonomousListProjects: AutonomousProjectListFunc | null = null;
   private statusBroadcast: StatusBroadcastFunc | null = null;
+  private analyzeProject: AnalyzeProjectFunc | null = null;
+  private createFollowUpProject: CreateFollowUpProjectFunc | null = null;
   private autonomousPaused = false;
   private isRunning = false; // Prevent overlapping autonomous runs
-  private autonomousLog: Array<{ timestamp: string; message: string }> = [];
+  private journal: AgentJournalEntry[] = [];
   private totalAutonomousSteps = 0;
   private totalAutonomousWords = 0;
 
@@ -88,16 +111,20 @@ export class HeartbeatService {
   }
 
   /**
-   * Wire up autonomous capabilities. Called after goal engine and AI are ready.
+   * Wire up autonomous capabilities. Called after project engine and AI are ready.
    */
   setAutonomous(
     runStep: AutonomousRunFunc,
-    listGoals: AutonomousGoalListFunc,
-    broadcast: StatusBroadcastFunc
+    listProjects: AutonomousProjectListFunc,
+    broadcast: StatusBroadcastFunc,
+    analyzeProject?: AnalyzeProjectFunc,
+    createFollowUp?: CreateFollowUpProjectFunc
   ): void {
     this.autonomousRunStep = runStep;
-    this.autonomousListGoals = listGoals;
+    this.autonomousListProjects = listProjects;
     this.statusBroadcast = broadcast;
+    this.analyzeProject = analyzeProject || null;
+    this.createFollowUpProject = createFollowUp || null;
   }
 
   start(): void {
@@ -132,8 +159,8 @@ export class HeartbeatService {
     if (!this.autonomousTimer && this.autonomousRunStep) {
       this.startAutonomous();
     }
-    this.logAutonomous('🤖 Autonomous mode ENABLED');
-    this.broadcast('🤖 Autonomous mode enabled — I\'ll check for goals every ' +
+    this.logAutonomous('Autonomous mode ENABLED', 'wake');
+    this.broadcast('🤖 Autonomous mode enabled — I\'ll check for projects every ' +
       this.config.autonomousIntervalMinutes + ' minutes');
   }
 
@@ -143,7 +170,7 @@ export class HeartbeatService {
   disableAutonomous(): void {
     this.config.autonomousEnabled = false;
     this.stopAutonomous();
-    this.logAutonomous('⏹ Autonomous mode DISABLED');
+    this.logAutonomous('Autonomous mode DISABLED', 'wake');
     this.broadcast('⏹ Autonomous mode disabled — I\'ll wait for your instructions');
   }
 
@@ -152,7 +179,7 @@ export class HeartbeatService {
    */
   pauseAutonomous(): void {
     this.autonomousPaused = true;
-    this.logAutonomous('⏸ Autonomous mode PAUSED');
+    this.logAutonomous('Autonomous mode PAUSED', 'idle');
     this.broadcast('⏸ Autonomous mode paused');
   }
 
@@ -161,7 +188,7 @@ export class HeartbeatService {
    */
   resumeAutonomous(): void {
     this.autonomousPaused = false;
-    this.logAutonomous('▶️ Autonomous mode RESUMED');
+    this.logAutonomous('Autonomous mode RESUMED', 'wake');
     this.broadcast('▶️ Autonomous mode resumed');
   }
 
@@ -185,7 +212,7 @@ export class HeartbeatService {
     quietHoursEnd: number;
     totalStepsExecuted: number;
     totalWordsGenerated: number;
-    recentLog: Array<{ timestamp: string; message: string }>;
+    recentLog: AgentJournalEntry[];
   } {
     return {
       enabled: this.config.autonomousEnabled,
@@ -197,8 +224,15 @@ export class HeartbeatService {
       quietHoursEnd: this.config.quietHoursEnd,
       totalStepsExecuted: this.totalAutonomousSteps,
       totalWordsGenerated: Math.max(this.totalAutonomousWords, this.todayWords),
-      recentLog: this.autonomousLog.slice(-20), // Last 20 entries
+      recentLog: this.journal.slice(-20),
     };
+  }
+
+  /**
+   * Get the full agent journal (last 200 entries)
+   */
+  getJournal(): AgentJournalEntry[] {
+    return this.journal.slice(-200);
   }
 
   /**
@@ -229,9 +263,9 @@ export class HeartbeatService {
       this.startAutonomous();
     }
 
-    this.logAutonomous(`⚙️ Config updated: interval=${this.config.autonomousIntervalMinutes}min, ` +
+    this.logAutonomous(`Config updated: interval=${this.config.autonomousIntervalMinutes}min, ` +
       `maxSteps=${this.config.maxAutonomousStepsPerWake}, ` +
-      `quiet=${this.config.quietHoursStart}:00-${this.config.quietHoursEnd}:00`);
+      `quiet=${this.config.quietHoursStart}:00-${this.config.quietHoursEnd}:00`, 'plan');
   }
 
   // ── Standard Heartbeat ──
@@ -339,7 +373,7 @@ export class HeartbeatService {
   private sendReminder(message: string): void {
     this.lastReminderSent = Date.now();
     this.broadcast(`💓 ${message}`);
-    this.logAutonomous(`Reminder: ${message}`);
+    this.logAutonomous(`Reminder: ${message}`, 'idle');
   }
 
   // ── Autonomous Wake Cycle ──
@@ -368,8 +402,8 @@ export class HeartbeatService {
   }
 
   /**
-   * The autonomous wake cycle. This is where the magic happens.
-   * Runs on schedule, finds active goals, and executes steps.
+   * The autonomous wake cycle with priority-based project selection.
+   * Runs on schedule, scores projects by priority, and executes steps.
    */
   private async autonomousWake(): Promise<void> {
     // Guard: don't run if disabled, paused, in quiet hours, or already running
@@ -377,54 +411,59 @@ export class HeartbeatService {
     if (this.autonomousPaused) return;
     if (this.isQuietHours(new Date().getHours())) return;
     if (this.isRunning) return;
-    if (!this.autonomousRunStep || !this.autonomousListGoals) return;
+    if (!this.autonomousRunStep || !this.autonomousListProjects) return;
 
     this.isRunning = true;
-    const wakeTime = new Date().toISOString();
-    this.logAutonomous(`⏰ Waking up — checking for work...`);
+    this.logAutonomous('Waking up — checking for work...', 'wake');
 
     try {
-      // Get all goals
-      const goals = this.autonomousListGoals();
+      const projects = this.autonomousListProjects();
 
-      // Find goals that need work (active first, then pending)
-      const activeGoals = goals.filter(g => g.status === 'active' && g.stepsRemaining > 0);
-      const pendingGoals = goals.filter(g => g.status === 'pending' && g.stepsRemaining > 0);
-      const workableGoals = [...activeGoals, ...pendingGoals];
+      // Score and sort projects by priority
+      const scored = projects
+        .filter(p => (p.status === 'active' || p.status === 'pending') && p.stepsRemaining > 0)
+        .map(p => ({
+          ...p,
+          score: this.scoreProject(p),
+        }))
+        .sort((a, b) => b.score - a.score);
 
-      if (workableGoals.length === 0) {
-        this.logAutonomous(`😴 No goals need work — going back to sleep`);
+      if (scored.length === 0) {
+        this.logAutonomous('No projects need work — idle', 'idle');
         this.isRunning = false;
         return;
       }
 
-      // Pick the first workable goal (active goals get priority)
-      const targetGoal = workableGoals[0];
-      this.logAutonomous(`📋 Found goal: "${targetGoal.title}" (${targetGoal.progress}, ${targetGoal.stepsRemaining} steps remaining)`);
-      this.broadcast(`⏰ Autonomous wake — working on: "${targetGoal.title}"`);
+      // Pick highest-priority project
+      const targetProject = scored[0];
+      this.logAutonomous(
+        `Selected "${targetProject.title}" (score: ${targetProject.score}, ${targetProject.progress}, ${targetProject.stepsRemaining} remaining)`,
+        'decision',
+        { projectId: targetProject.id, score: targetProject.score, alternatives: scored.length - 1 }
+      );
+      this.broadcast(`⏰ Autonomous wake — working on: "${targetProject.title}"`);
 
       // Execute up to maxStepsPerWake steps
       let stepsThisWake = 0;
       let wordsThisWake = 0;
 
       for (let i = 0; i < this.config.maxAutonomousStepsPerWake; i++) {
-        // Re-check guards each iteration
         if (this.autonomousPaused) {
-          this.logAutonomous(`⏸ Paused mid-cycle after ${stepsThisWake} steps`);
+          this.logAutonomous(`Paused mid-cycle after ${stepsThisWake} steps`, 'idle');
           this.broadcast(`⏸ Paused mid-cycle after ${stepsThisWake} steps`);
           break;
         }
 
         if (this.isQuietHours(new Date().getHours())) {
-          this.logAutonomous(`🌙 Entering quiet hours — stopping after ${stepsThisWake} steps`);
+          this.logAutonomous(`Entering quiet hours — stopping after ${stepsThisWake} steps`, 'idle');
           this.broadcast(`🌙 Entering quiet hours — stopping after ${stepsThisWake} steps`);
           break;
         }
 
-        const result = await this.autonomousRunStep(targetGoal.id);
+        const result = await this.autonomousRunStep(targetProject.id);
 
         if ('error' in result) {
-          this.logAutonomous(`❌ Step failed: ${result.error}`);
+          this.logAutonomous(`Step failed: ${result.error}`, 'difficulty', { projectId: targetProject.id });
           this.broadcast(`❌ Autonomous step failed: ${result.error}`);
           break;
         }
@@ -434,40 +473,119 @@ export class HeartbeatService {
         this.totalAutonomousSteps++;
         this.totalAutonomousWords += result.wordCount || 0;
 
-        this.logAutonomous(`✅ Completed: "${result.completed}" (~${result.wordCount.toLocaleString()} words)`);
+        this.logAutonomous(
+          `Completed: "${result.completed}" (~${result.wordCount.toLocaleString()} words)`,
+          'step',
+          { projectId: targetProject.id, step: result.completed, wordCount: result.wordCount }
+        );
 
         if (!result.nextStep) {
-          // Goal is complete!
-          this.logAutonomous(`🎉 Goal "${targetGoal.title}" COMPLETE!`);
+          this.logAutonomous(`Project "${targetProject.title}" COMPLETE!`, 'step', {
+            projectId: targetProject.id,
+            totalSteps: stepsThisWake,
+            totalWords: wordsThisWake,
+          });
           this.broadcast(
-            `🎉 Goal "${targetGoal.title}" complete!\n` +
+            `🎉 Project "${targetProject.title}" complete!\n` +
             `📊 This wake: ${stepsThisWake} steps, ~${wordsThisWake.toLocaleString()} words\n` +
             `📁 Files saved to workspace/projects/`
           );
+
+          // Trigger self-improvement analysis
+          await this.selfImprove(targetProject.id, targetProject.title);
+
+          // Auto-create follow-up project for novel pipelines
+          if (targetProject.type === 'novel-pipeline' && this.createFollowUpProject) {
+            try {
+              const followUpId = await this.createFollowUpProject(
+                targetProject.id, targetProject.title, targetProject.type
+              );
+              if (followUpId) {
+                this.logAutonomous(
+                  `Follow-up project created for "${targetProject.title}"`,
+                  'plan',
+                  { originalProjectId: targetProject.id, followUpId }
+                );
+                this.broadcast(`📝 Follow-up project created: Polish & Publish for "${targetProject.title}"`);
+              }
+            } catch (err) {
+              this.logAutonomous(`Follow-up creation failed: ${err}`, 'difficulty');
+            }
+          }
+
           break;
         }
 
-        // Brief pause between steps (be respectful of API rate limits)
         await this.sleep(3000);
       }
 
       if (stepsThisWake > 0) {
-        const summary = `📊 Wake cycle done: ${stepsThisWake} steps, ~${wordsThisWake.toLocaleString()} words`;
-        this.logAutonomous(summary);
-        if (stepsThisWake < this.config.maxAutonomousStepsPerWake) {
-          // Goal completed or paused — already broadcast above
-        } else {
+        const summary = `Wake cycle done: ${stepsThisWake} steps, ~${wordsThisWake.toLocaleString()} words`;
+        this.logAutonomous(summary, 'wake', { steps: stepsThisWake, words: wordsThisWake });
+        if (stepsThisWake >= this.config.maxAutonomousStepsPerWake) {
           this.broadcast(
-            summary + `\n⏰ Next wake in ${this.config.autonomousIntervalMinutes} minutes`
+            `📊 ${summary}\n⏰ Next wake in ${this.config.autonomousIntervalMinutes} minutes`
           );
         }
       }
 
     } catch (error) {
-      this.logAutonomous(`💥 Error during autonomous wake: ${error}`);
+      this.logAutonomous(`Error during autonomous wake: ${error}`, 'difficulty');
       console.error('Autonomous wake error:', error);
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  /**
+   * Score a project for priority-based selection.
+   * Higher score = picked first.
+   */
+  private scoreProject(project: { status: string; progressNum: number; type: string; stepsRemaining: number }): number {
+    let score = 0;
+    // Active projects get strong priority
+    if (project.status === 'active') score += 100;
+    // Closer to finish = higher priority (finish what you started)
+    if (project.progressNum > 50) score += 20;
+    if (project.progressNum > 75) score += 15;
+    // Novel pipelines get slight boost (long-running, should be prioritized)
+    if (project.type === 'novel-pipeline') score += 10;
+    // Fewer steps remaining = closer to done
+    if (project.stepsRemaining <= 3) score += 10;
+    return score;
+  }
+
+  /**
+   * Self-improvement: After a project completes, analyze the outputs
+   * and store actionable insights for future writing.
+   */
+  private async selfImprove(projectId: string, projectTitle: string): Promise<void> {
+    if (!this.analyzeProject) return;
+
+    this.logAutonomous(`Running self-improvement analysis for "${projectTitle}"...`, 'improve', { projectId });
+
+    try {
+      const analysis = await this.analyzeProject(projectId);
+      if (!analysis) {
+        this.logAutonomous('Self-improvement: no analysis returned', 'improve');
+        return;
+      }
+
+      this.logAutonomous(
+        `Self-improvement complete for "${projectTitle}": ${analysis.insights.length} insights, ` +
+        `${analysis.strengths.length} strengths, ${analysis.weaknesses.length} weaknesses`,
+        'improve',
+        { projectId, insights: analysis.insights.length }
+      );
+
+      this.broadcast(
+        `🧠 Self-improvement analysis for "${projectTitle}":\n` +
+        `  Insights: ${analysis.insights.length}\n` +
+        `  Strengths: ${analysis.strengths.length}\n` +
+        `  Weaknesses: ${analysis.weaknesses.length}`
+      );
+    } catch (err) {
+      this.logAutonomous(`Self-improvement failed: ${err}`, 'difficulty', { projectId });
     }
   }
 
@@ -482,12 +600,12 @@ export class HeartbeatService {
     return hour >= this.config.quietHoursStart && hour < this.config.quietHoursEnd;
   }
 
-  private logAutonomous(message: string): void {
-    const entry = { timestamp: new Date().toISOString(), message };
-    this.autonomousLog.push(entry);
-    // Keep last 100 entries
-    if (this.autonomousLog.length > 100) {
-      this.autonomousLog = this.autonomousLog.slice(-100);
+  private logAutonomous(message: string, type: AgentJournalEntry['type'] = 'wake', metadata?: Record<string, any>): void {
+    const entry: AgentJournalEntry = { timestamp: new Date().toISOString(), type, message, metadata };
+    this.journal.push(entry);
+    // Keep last 200 entries
+    if (this.journal.length > 200) {
+      this.journal = this.journal.slice(-200);
     }
     console.log(`  💓 ${message}`);
   }

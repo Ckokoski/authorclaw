@@ -25,7 +25,7 @@ npx tsx gateway/src/index.ts
 You should see:
 
 ```
-  AuthorClaw v2.0.0
+  AuthorClaw v3.0.0
   ═══════════════════════════════════
   The Autonomous AI Writing Agent
   ...
