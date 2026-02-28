@@ -1062,7 +1062,7 @@ function loadProjectTemplates() {
       card.className = 'project-template';
       var titleHtml = '<div class="gt-title">' + esc(t.label || t.title) + '</div>';
       var descHtml = '<div class="gt-desc">' + esc(t.description) + '</div>';
-      var stepsHtml = t.stepCount ? '<div class="gt-steps">' + t.stepCount + ' steps</div>' : '';
+      var stepsHtml = t.stepCountLabel ? '<div class="gt-steps">' + esc(t.stepCountLabel) + '</div>' : (t.stepCount ? '<div class="gt-steps">' + t.stepCount + ' steps</div>' : '');
       // Custom templates have an id and a delete option
       if (t.custom) {
         stepsHtml += '<div style="margin-top:4px;"><span style="color:#e74c3c;cursor:pointer;font-size:11px;" class="del-template" data-id="' + esc(t.id) + '">Delete</span></div>';
@@ -1218,6 +1218,15 @@ function loadProjects() {
         actions.appendChild(saveTemplateBtn);
       }
 
+      // Download button — show if any steps have completed
+      var hasOutputs = g.steps.some(function(s) { return s.status === 'completed'; });
+      if (hasOutputs) {
+        var dlBtn = document.createElement('button');
+        dlBtn.className = 'secondary'; dlBtn.textContent = '\u{1F4E5} Download Files';
+        dlBtn.addEventListener('click', function() { showProjectFiles(g.id, g.title); });
+        actions.appendChild(dlBtn);
+      }
+
       // Upload file button (for active, pending, paused projects)
       if (g.status !== 'completed') {
         var uploadBtn = document.createElement('button');
@@ -1305,9 +1314,14 @@ function skipProjectStep(projectId, stepId) {
 }
 
 function deleteProject(id) {
-  if (!confirm('Delete this project?')) return;
-  api('DELETE', '/api/projects/' + id).then(function() {
-    showToast('Project deleted', 'info');
+  var deleteFiles = confirm('Delete this project?\n\nClick OK to delete.\n(Output files will be kept unless you also clean workspace.)');
+  if (!deleteFiles) return;
+  var alsoDeleteFiles = confirm('Also delete all output files from disk?\n\nOK = Delete project + files\nCancel = Delete project only (keep files)');
+  var url = '/api/projects/' + id + (alsoDeleteFiles ? '?files=true' : '');
+  api('DELETE', url).then(function(data) {
+    var msg = 'Project deleted';
+    if (data.filesDeleted) msg += ' + ' + data.filesDeleted + ' files removed from disk';
+    showToast(msg, 'info');
     loadProjects();
   }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
 }
@@ -1323,6 +1337,62 @@ function saveProjectAsTemplate(project) {
     showToast('Saved as template!', 'success');
     loadProjectTemplates();
   }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+}
+
+// ══════════════════════════════════════════════════════════════
+// PROJECT FILE DOWNLOADS
+// ══════════════════════════════════════════════════════════════
+
+function showProjectFiles(projectId, projectTitle) {
+  // Check if there's already a file list open for this project — toggle it
+  var existing = document.getElementById('file-list-' + projectId);
+  if (existing) { existing.remove(); return; }
+
+  api('GET', '/api/projects/' + projectId + '/files').then(function(data) {
+    if (!data.files || data.files.length === 0) {
+      showToast('No output files yet for this project', 'info');
+      return;
+    }
+
+    // Find the project card and insert the file list below the actions
+    var cards = document.querySelectorAll('#projectList .gi-item');
+    var targetCard = null;
+    cards.forEach(function(card) {
+      if (card.querySelector('.gi-actions') && card.textContent.indexOf(projectTitle) !== -1) {
+        targetCard = card;
+      }
+    });
+    if (!targetCard) { showToast('Could not find project card', 'error'); return; }
+
+    var filePanel = document.createElement('div');
+    filePanel.id = 'file-list-' + projectId;
+    filePanel.style.cssText = 'margin-top:12px;padding:12px;background:#1a1a2e;border:1px solid #0f3460;border-radius:8px;';
+    var header = '<div style="font-weight:700;font-size:14px;margin-bottom:8px;">\u{1F4C1} Project Files</div>';
+    var fileRows = '';
+    data.files.forEach(function(f) {
+      var sizeStr = f.size < 1024 ? f.size + ' B' : (f.size < 1048576 ? (f.size / 1024).toFixed(1) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB');
+      var icon = f.type === 'docx' ? '\u{1F4D8}' : (f.type === 'md' ? '\u{1F4DD}' : '\u{1F4C4}');
+      var isManuscript = f.name.startsWith('manuscript');
+      var highlight = isManuscript ? 'background:#0f3460;border:1px solid #e67e22;' : 'background:#16213e;border:1px solid #0f3460;';
+      var label = isManuscript ? ' <span style="color:#e67e22;font-size:10px;font-weight:700;">MANUSCRIPT</span>' : '';
+      fileRows += '<div style="display:flex;align-items:center;gap:8px;padding:8px;margin-bottom:4px;border-radius:6px;' + highlight + '">' +
+        '<span style="font-size:18px;">' + icon + '</span>' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(f.name) + label + '</div>' +
+          '<div style="font-size:11px;color:#7f8c8d;">' + sizeStr + '</div>' +
+        '</div>' +
+        '<a href="/api/projects/' + encodeURIComponent(projectId) + '/download/' + encodeURIComponent(f.name) + '" ' +
+          'download="' + esc(f.name) + '" ' +
+          'style="background:#27ae60;color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;text-decoration:none;white-space:nowrap;font-weight:600;" ' +
+          'title="Download ' + esc(f.name) + '">\u2B07 Download</a>' +
+      '</div>';
+    });
+    var closeRow = '<div style="text-align:right;margin-top:8px;"><span style="color:#7f8c8d;cursor:pointer;font-size:12px;" onclick="this.parentElement.parentElement.remove()">Close</span></div>';
+    filePanel.innerHTML = header + fileRows + closeRow;
+    targetCard.appendChild(filePanel);
+  }).catch(function(e) {
+    showToast('Failed to load files: ' + e.message, 'error');
+  });
 }
 
 // ══════════════════════════════════════════════════════════════

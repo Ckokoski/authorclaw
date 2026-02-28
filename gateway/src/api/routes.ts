@@ -733,13 +733,37 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     res.json({ project: engine.getProject(req.params.id) });
   });
 
-  app.delete('/api/projects/:id', (req: Request, res: Response) => {
+  app.delete('/api/projects/:id', async (req: Request, res: Response) => {
     const engine = gateway.getProjectEngine?.();
     if (!engine) {
       return res.status(503).json({ error: 'Project engine not initialized' });
     }
+
+    // Get project info before deleting (to find files on disk)
+    const project = engine.getProject(req.params.id);
+    const deleteFiles = req.query.files === 'true';
+
     const deleted = engine.deleteProject(req.params.id);
-    res.json({ success: deleted });
+
+    // Optionally delete workspace files too
+    let filesDeleted = 0;
+    if (deleted && deleteFiles && project) {
+      try {
+        const { join: j } = await import('path');
+        const { rm } = await import('fs/promises');
+        const { existsSync: ex } = await import('fs');
+        const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
+        if (ex(projectDir)) {
+          const { readdir } = await import('fs/promises');
+          const entries = await readdir(projectDir);
+          filesDeleted = entries.length;
+          await rm(projectDir, { recursive: true });
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    res.json({ success: deleted, filesDeleted });
   });
 
   // ═══════════════════════════════════════════════════════════
@@ -827,6 +851,160 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       wordCount,
       preview: textContent.substring(0, 200),
     });
+  });
+
+  // ── Workspace File Management ──
+
+  app.get('/api/workspace/stats', async (_req: Request, res: Response) => {
+    const { join: j } = await import('path');
+    const { readdir: rd, stat: st } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+    const workspaceDir = j(baseDir, 'workspace');
+
+    const stats: Record<string, { files: number; size: number; items?: string[] }> = {};
+
+    async function scanDir(name: string, dirPath: string, listItems = true) {
+      if (!ex(dirPath)) { stats[name] = { files: 0, size: 0 }; return; }
+      try {
+        const entries = await rd(dirPath, { recursive: true });
+        let totalSize = 0;
+        let fileCount = 0;
+        const items: string[] = [];
+        for (const entry of entries) {
+          try {
+            const fp = j(dirPath, String(entry));
+            const s = await st(fp);
+            if (s.isFile()) { fileCount++; totalSize += s.size; if (listItems) items.push(String(entry)); }
+          } catch { /* skip */ }
+        }
+        stats[name] = { files: fileCount, size: totalSize, items: listItems ? items.slice(0, 50) : undefined };
+      } catch { stats[name] = { files: 0, size: 0 }; }
+    }
+
+    await Promise.all([
+      scanDir('projects', j(workspaceDir, 'projects')),
+      scanDir('research', j(workspaceDir, 'research')),
+      scanDir('exports', j(workspaceDir, 'exports')),
+      scanDir('agent', j(workspaceDir, '.agent'), false),
+      scanDir('memory', j(workspaceDir, '.memory'), false),
+      scanDir('audio', j(workspaceDir, '.audio')),
+    ]);
+
+    const totalFiles = Object.values(stats).reduce((sum, s) => sum + s.files, 0);
+    const totalSize = Object.values(stats).reduce((sum, s) => sum + s.size, 0);
+    res.json({ totalFiles, totalSize, totalSizeFormatted: (totalSize / 1048576).toFixed(1) + ' MB', breakdown: stats });
+  });
+
+  app.delete('/api/workspace/clean', async (req: Request, res: Response) => {
+    const { join: j } = await import('path');
+    const { rm } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+    const workspaceDir = j(baseDir, 'workspace');
+
+    const target = String(req.query.target || '');
+    const allowed = ['projects', 'research', 'exports', 'audio'];
+    if (!allowed.includes(target)) {
+      return res.status(400).json({ error: `Target must be one of: ${allowed.join(', ')}` });
+    }
+
+    const dirName = target === 'audio' ? '.audio' : target;
+    const targetDir = j(workspaceDir, dirName);
+    let deleted = 0;
+
+    if (ex(targetDir)) {
+      try {
+        const { readdir } = await import('fs/promises');
+        const entries = await readdir(targetDir);
+        deleted = entries.length;
+        await rm(targetDir, { recursive: true });
+      } catch (e) {
+        return res.status(500).json({ error: String(e) });
+      }
+    }
+
+    res.json({ success: true, target, deleted });
+  });
+
+  // ── Project File Listing ──
+
+  app.get('/api/projects/:id/files', async (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) return res.status(503).json({ error: 'Project engine not initialized' });
+    const project = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const { join: j } = await import('path');
+    const { readdir: rd, stat: st } = await import('fs/promises');
+    const { existsSync: ex } = await import('fs');
+
+    const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
+
+    if (!ex(projectDir)) return res.json({ files: [] });
+
+    try {
+      const entries = await rd(projectDir);
+      const files: Array<{ name: string; size: number; type: string }> = [];
+      for (const entry of entries) {
+        if (entry === 'uploads') continue; // skip uploads subfolder
+        const fullPath = j(projectDir, entry);
+        const info = await st(fullPath);
+        if (!info.isFile()) continue;
+        const ext = entry.split('.').pop()?.toLowerCase() || '';
+        files.push({ name: entry, size: info.size, type: ext });
+      }
+      // Sort: manuscript files first, then by name
+      files.sort((a, b) => {
+        const aManuscript = a.name.startsWith('manuscript') ? 0 : 1;
+        const bManuscript = b.name.startsWith('manuscript') ? 0 : 1;
+        if (aManuscript !== bManuscript) return aManuscript - bManuscript;
+        return a.name.localeCompare(b.name);
+      });
+      res.json({ files, projectDir: projectSlug });
+    } catch {
+      res.json({ files: [] });
+    }
+  });
+
+  // ── Project File Download ──
+
+  app.get('/api/projects/:id/download/:filename', async (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) return res.status(503).json({ error: 'Project engine not initialized' });
+    const project = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const { join: j, resolve: rv } = await import('path');
+    const { existsSync: ex } = await import('fs');
+
+    const filename = String(req.params.filename);
+    const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
+    const filePath = rv(projectDir, filename);
+
+    // Security: ensure the resolved path is inside the project directory
+    if (!filePath.startsWith(rv(projectDir))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (!ex(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Set content disposition for download
+    const ext = filename.split('.').pop()?.toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      md: 'text/markdown',
+      txt: 'text/plain',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      html: 'text/html',
+      json: 'application/json',
+    };
+    res.setHeader('Content-Type', mimeTypes[ext || ''] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    const { createReadStream } = await import('fs');
+    createReadStream(filePath).pipe(res);
   });
 
   // ═══════════════════════════════════════════════════════════

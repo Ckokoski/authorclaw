@@ -121,16 +121,17 @@ export class TelegramBridge {
         `Tell me what to do and I'll figure out the steps.\n\n` +
         `*Commands:*\n` +
         `/novel [idea] — Start a full novel pipeline\n` +
-        `/project [task] — Plan & auto-execute a task\n` +
-        `/write [idea] — Plan & write a book\n` +
+        `/project [task] — Plan & auto-execute any task\n` +
+        `/write [idea] — Quick writing task\n` +
         `/projects — List all projects\n` +
         `/status — Project status\n` +
+        `/stop — Stop/pause active project\n` +
         `/research [topic] — Research a topic\n` +
-        `/files — List files (numbered)\n` +
+        `/files — List output files (numbered)\n` +
         `/read [# or name] — Read a file\n` +
-        `/export [# or name] — Export to Word/EPUB/PDF\n` +
-        `/stop — Stop/pause active project\n\n` +
-        `Or just chat with me.`);
+        `/export [# or name] — Export to Word/HTML/TXT\n` +
+        `/clean — Workspace usage & cleanup\n\n` +
+        `Or just chat with me naturally.`);
       return;
     }
 
@@ -161,7 +162,7 @@ export class TelegramBridge {
       return;
     }
 
-    // ── /write — Create a writing goal and AUTO-RUN all steps ──
+    // ── /write — Create a writing project and AUTO-RUN all steps ──
     if (text.startsWith('/write')) {
       const idea = text.replace(/^\/write\s*/, '').trim();
       if (!idea) {
@@ -172,12 +173,14 @@ export class TelegramBridge {
       if (this.commandHandlers) {
         await this.sendMessage(chatId, `📝 On it. Planning "${idea}"...\nI'll figure out the steps and run them automatically.`);
         try {
-          const project = await this.commandHandlers.createProject(idea, `Write a book: ${idea}`);
-          await this.sendMessage(chatId, `✅ Planned ${project.steps} steps. Running autonomously...`);
+          const project = await this.commandHandlers.createProject(idea, idea);
+          await this.sendMessage(chatId, `✅ Planned ${project.steps} steps. Running autonomously...\nUse /stop to pause, /status to check progress.`);
 
-          // Auto-run ALL steps
-          await this.commandHandlers.autoRunProject(project.id, async (msg) => {
+          // Fire-and-forget: don't await so the poll loop can keep receiving /stop commands
+          this.commandHandlers.autoRunProject(project.id, async (msg: string) => {
             await this.sendMessage(chatId, msg);
+          }).catch(async (e: any) => {
+            await this.sendMessage(chatId, `❌ Error: ${String(e)}`);
           });
         } catch (e) {
           await this.sendMessage(chatId, `❌ Error: ${String(e)}`);
@@ -220,11 +223,13 @@ export class TelegramBridge {
           await this.sendMessage(chatId, `🧠 Planning "${description}"...`);
           const project = await this.commandHandlers.createProject(description, description);
           await this.sendMessage(chatId,
-            `✅ Planned ${project.steps} steps. Running autonomously...`);
+            `✅ Planned ${project.steps} steps. Running autonomously...\nUse /stop to pause, /status to check progress.`);
 
-          // Auto-run ALL steps
-          await this.commandHandlers.autoRunProject(project.id, async (msg) => {
+          // Fire-and-forget: don't await so the poll loop can keep receiving /stop commands
+          this.commandHandlers.autoRunProject(project.id, async (msg: string) => {
             await this.sendMessage(chatId, msg);
+          }).catch(async (e: any) => {
+            await this.sendMessage(chatId, `❌ ${String(e)}`);
           });
         } catch (e) {
           await this.sendMessage(chatId, `❌ ${String(e)}`);
@@ -413,6 +418,48 @@ export class TelegramBridge {
       return;
     }
 
+    // ── /clean — Workspace file management ──
+    if (text.startsWith('/clean')) {
+      const target = text.replace(/^\/clean\s*/, '').trim().toLowerCase();
+
+      if (!target) {
+        // Show workspace stats
+        try {
+          const statsRes = await fetch('http://localhost:3847/api/workspace/stats');
+          const stats = await statsRes.json() as any;
+          let msg = `📊 *Workspace Usage:* ${stats.totalSizeFormatted} (${stats.totalFiles} files)\n\n`;
+          for (const [name, info] of Object.entries(stats.breakdown) as any) {
+            const sizeStr = (info.size / 1024).toFixed(0) + ' KB';
+            msg += `📁 ${name}: ${info.files} files (${sizeStr})\n`;
+          }
+          msg += `\n🧹 To clean a folder:\n/clean projects — delete all project output files\n/clean research — delete all research files\n/clean exports — delete all exported files\n/clean audio — delete generated audio`;
+          await this.sendMessage(chatId, msg);
+        } catch {
+          await this.sendMessage(chatId, `❌ Could not load workspace stats`);
+        }
+        return;
+      }
+
+      const allowed = ['projects', 'research', 'exports', 'audio'];
+      if (!allowed.includes(target)) {
+        await this.sendMessage(chatId, `⚠️ Can only clean: ${allowed.join(', ')}\n\nUse /clean to see current usage.`);
+        return;
+      }
+
+      try {
+        const cleanRes = await fetch(`http://localhost:3847/api/workspace/clean?target=${target}`, { method: 'DELETE' });
+        const result = await cleanRes.json() as any;
+        if (result.success) {
+          await this.sendMessage(chatId, `🧹 Cleaned ${target}: ${result.deleted} items removed.`);
+        } else {
+          await this.sendMessage(chatId, `⚠️ ${result.error || 'Failed to clean'}`);
+        }
+      } catch (e) {
+        await this.sendMessage(chatId, `❌ ${String(e)}`);
+      }
+      return;
+    }
+
     // ── /stop — Pause active project ──
     if (text.startsWith('/stop') || text.startsWith('/pause')) {
       const activeProject = this.commandHandlers
@@ -442,14 +489,13 @@ export class TelegramBridge {
           return;
         }
         this.pauseRequested = false;
-        await this.sendMessage(chatId, `▶️ Resuming "${active.title}"...`);
-        try {
-          await this.commandHandlers.autoRunProject(active.id, async (msg) => {
-            await this.sendMessage(chatId, msg);
-          });
-        } catch (e) {
+        await this.sendMessage(chatId, `▶️ Resuming "${active.title}"...\nUse /stop to pause again.`);
+        // Fire-and-forget so poll loop stays responsive to /stop
+        this.commandHandlers.autoRunProject(active.id, async (msg: string) => {
+          await this.sendMessage(chatId, msg);
+        }).catch(async (e: any) => {
           await this.sendMessage(chatId, `❌ ${String(e)}`);
-        }
+        });
       }
       return;
     }

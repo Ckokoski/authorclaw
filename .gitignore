@@ -3,13 +3,17 @@ gateway/dist/
 .env
 config/.vault/
 config/user.json
-workspace/memory/conversations/
-workspace/memory/voice-data/
-workspace/.audit/
+
+# Workspace runtime data (user-generated, not code)
+workspace/projects/
+workspace/research/
 workspace/exports/
-workspace/projects/*/chapters/
-workspace/projects/*/research/
-workspace/projects/*/submissions/
+workspace/.memory/
+workspace/.audit/
+workspace/.agent/
+workspace/.audio/
+workspace/.config/
+workspace/.activity/
 *.log
 .DS_Store
 

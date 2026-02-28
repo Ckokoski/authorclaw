@@ -143,29 +143,41 @@ Connect a Telegram bot to control AuthorClaw from your phone:
 
 | Command | What It Does |
 |---------|-------------|
-| `/project [task]` | Tell AuthorClaw what to do — it plans steps and executes autonomously |
-| `/novel [idea]` | Create a full novel pipeline project from your idea (30+ steps) |
-| `/projects` | List all projects with status |
-| `/status` | Quick status check |
-| `/research [topic]` | Research a topic using real web search (allowlisted domains) |
-| `/files [folder]` | List files in your workspace |
-| `/read [file]` | Preview a file's contents |
-| `/stop` | Pause the active project |
+| `/novel [idea]` | Create a full novel pipeline (premise → characters → world → outline → chapters → revision → assembly) |
+| `/project [task]` | Plan & auto-execute any task — AuthorClaw figures out the steps |
+| `/write [idea]` | Quick writing task (short-form content, scenes, intros) |
+| `/projects` | List all projects with status and progress |
+| `/status` | Quick status check on what's running |
+| `/stop` | Pause the active project immediately |
 | `continue` | Resume a paused project |
+| `/research [topic]` | Research a topic using Wikipedia + Google Books (allowlisted domains) |
+| `/files [folder]` | List output files (numbered for easy `/read` and `/export`) |
+| `/read [# or name]` | Preview a file's contents |
+| `/export [# or name] [format]` | Export to Word (.docx), HTML, or TXT |
+| `/clean` | View workspace disk usage and clean up old files |
 
 ### Example Session
 
 ```
-You:      /project write a full novel about rogue AI in aviation
-AuthorClaw: Planning "write a full novel about rogue AI in aviation"...
-AuthorClaw: Planned 15 steps. Running autonomously...
-AuthorClaw: ✅ 1/15: Develop premise (~800 words)
-            ⏭ Next: Create character profiles...
-AuthorClaw: ✅ 2/15: Create character profiles (~2,400 words)
-            ⏭ Next: Build world and settings...
-...
-AuthorClaw: 🎉 All 15 steps complete!
-            📁 Files saved to workspace/projects/
+You:        /write a short snarky YouTube intro for my channel
+AuthorClaw: 📝 On it. Planning "a short snarky YouTube intro"...
+AuthorClaw: ✅ Planned 2 steps. Running autonomously...
+AuthorClaw: ✅ 1/2: Draft the intro (~400 words)
+AuthorClaw: 🎉 All 2 steps complete!
+
+You:        /novel a sci-fi thriller about rogue AI in aviation
+AuthorClaw: 📖 Novel pipeline created: 32 steps
+            (premise → bible → outline → chapters → revision → assembly)
+AuthorClaw: ✅ 1/32: Develop premise (~800 words)
+            ⏭ Next: Refine premise...
+You:        /stop
+AuthorClaw: ⏸ Paused at step 4/32. Say "continue" to resume.
+
+You:        /clean
+AuthorClaw: 📊 Workspace Usage: 2.1 MB (67 files)
+            📁 projects: 43 files (1.8 MB)
+            📁 exports: 2 files (21 KB)
+            🧹 /clean projects — delete all project files
 ```
 
 ---
