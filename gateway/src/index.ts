@@ -441,7 +441,8 @@ class AuthorClawGateway {
     content: string,
     channel: string,
     respond: (text: string) => void,
-    extraContext?: string
+    extraContext?: string,
+    overrideTaskType?: string
   ): Promise<void> {
     // ── Security Check 1: Injection Detection ──
     const injectionResult = this.injectionDetector.scan(content);
@@ -474,7 +475,9 @@ class AuthorClawGateway {
     const heartbeatContext = this.heartbeat.getContext();
 
     // ── Determine best AI provider for this task ──
-    const taskType = this.classifyTask(content);
+    // Project steps pass their own taskType to avoid misclassification
+    // (e.g., "copy editing" in a prompt shouldn't route to premium tier)
+    const taskType = overrideTaskType || this.classifyTask(content);
     const provider = this.aiRouter.selectProvider(taskType);
 
     // ── Log skill matching to activity ──
@@ -501,8 +504,10 @@ class AuthorClawGateway {
       systemPrompt += '\n' + extraContext;
     }
 
-    // ── Add to conversation history (skip for silent channels to prevent long output in Telegram) ──
-    const skipHistory = channel === 'conductor' || channel === 'api-silent';
+    // ── Add to conversation history (skip for project engines + silent channels) ──
+    // Project steps use their own context chain, not the chat history
+    const isProjectChannel = channel === 'projects' || channel === 'project-engine' || channel === 'goal-engine';
+    const skipHistory = isProjectChannel || channel === 'conductor' || channel === 'api-silent';
     if (!skipHistory) {
       this.conversationHistory.push({
         role: 'user',
@@ -516,15 +521,22 @@ class AuthorClawGateway {
       }
     }
 
+    // ── Build messages array ──
+    // Project steps get a CLEAN message array (just the step prompt)
+    // Chat messages include conversation history for continuity
+    const messages = isProjectChannel
+      ? [{ role: 'user' as const, content }]
+      : this.conversationHistory.map(m => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        }));
+
     // ── Call AI ──
     try {
       const response = await this.aiRouter.complete({
         provider: provider.id,
         system: systemPrompt,
-        messages: this.conversationHistory.map(m => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-        })),
+        messages,
       });
 
       if (!skipHistory) {
@@ -577,13 +589,11 @@ class AuthorClawGateway {
       const fallback = this.aiRouter.getFallbackProvider(provider.id);
       if (fallback) {
         try {
+          console.log(`  ↻ Falling back to ${fallback.id}...`);
           const response = await this.aiRouter.complete({
             provider: fallback.id,
             system: systemPrompt,
-            messages: this.conversationHistory.map(m => ({
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-            })),
+            messages,
           });
           if (!skipHistory) {
             this.conversationHistory.push({
@@ -952,17 +962,27 @@ class AuthorClawGateway {
           }
         }
 
+        // Build user message with uploaded content injected directly
+        let stepUserMessage = activeStep!.prompt;
+        if (project.context?.uploadedContent) {
+          const uploaded = String(project.context.uploadedContent).substring(0, 30000);
+          const uploads = project.context.uploads || [];
+          const fileList = uploads.map((u: any) => `${u.filename} (${u.wordCount} words)`).join(', ');
+          stepUserMessage = `## Manuscript to Work With\n\nUploaded files: ${fileList}\n\n${uploaded}\n\n---\n\n## Your Task\n\n${stepUserMessage}`;
+        }
+
         let aiResponse = '';
         try {
           await new Promise<void>((resolve, reject) => {
             gateway.handleMessage(
-              activeStep!.prompt,
+              stepUserMessage,
               'goal-engine',
               (response) => {
                 aiResponse = response;
                 resolve();
               },
-              projectContext
+              projectContext,
+              (activeStep as any).taskType || undefined
             ).catch(reject);
           });
         } catch (err) {

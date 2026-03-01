@@ -1249,18 +1249,16 @@ Description: ${description}`;
   }
 
   private enrichWithPriorResults(prompt: string, project: Project): string {
-    // If the prompt already references previous work, skip
+    // Prior step results are already included in buildProjectContext() system context.
+    // Don't duplicate them in the user message — it wastes tokens and can confuse the AI.
+    // Just add a brief note referencing the previous step so the AI knows to build on it.
     if (prompt.includes('we developed') || prompt.includes('we created')) {
       return prompt;
     }
 
-    // Add a brief context note from the last completed step
     const lastCompleted = [...project.steps].reverse().find(s => s.status === 'completed' && s.result);
-    if (lastCompleted && lastCompleted.result) {
-      const brief = lastCompleted.result.length > 500
-        ? lastCompleted.result.slice(0, 500) + '...'
-        : lastCompleted.result;
-      return `[Context from "${lastCompleted.label}": ${brief}]\n\n${prompt}`;
+    if (lastCompleted) {
+      return `[Build on the work from "${lastCompleted.label}" — see system context for details.]\n\n${prompt}`;
     }
 
     return prompt;

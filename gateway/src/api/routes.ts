@@ -541,6 +541,24 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     res.json({ step, project: engine.getProject(req.params.id) });
   });
 
+  // Helper: build user message for project step execution
+  // Injects uploaded manuscript DIRECTLY into the user message so the AI can't miss it
+  function buildStepUserMessage(project: any, step: any): string {
+    let message = step.prompt;
+
+    // If the project has uploaded content, include it directly in the user message
+    // This is critical — system context can be huge (soul + skills + memories) and
+    // models may not see the uploaded text if it's buried in system context
+    if (project.context?.uploadedContent) {
+      const uploaded = String(project.context.uploadedContent).substring(0, 30000);
+      const uploads = project.context.uploads || [];
+      const fileList = uploads.map((u: any) => `${u.filename} (${u.wordCount} words)`).join(', ');
+      message = `## Manuscript to Work With\n\nUploaded files: ${fileList}\n\n${uploaded}\n\n---\n\n## Your Task\n\n${message}`;
+    }
+
+    return message;
+  }
+
   app.post('/api/projects/:id/execute', async (req: Request, res: Response) => {
     const engine = gateway.getProjectEngine?.();
     if (!engine) {
@@ -558,13 +576,15 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
 
     try {
       const projectContext = engine.buildProjectContext(project, activeStep);
+      const userMessage = buildStepUserMessage(project, activeStep);
       let response = '';
 
       await gateway.handleMessage(
-        activeStep.prompt,
+        userMessage,
         'projects',
         (text: string) => { response = text; },
-        projectContext
+        projectContext,
+        activeStep.taskType || undefined  // Use step's own taskType for routing
       );
 
       if (!response || response.length < 50) {
@@ -630,13 +650,15 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
 
       try {
         const projectContext = engine.buildProjectContext(currentProject, activeStep);
+        const userMessage = buildStepUserMessage(currentProject, activeStep);
         let response = '';
 
         await gateway.handleMessage(
-          activeStep.prompt,
+          userMessage,
           'project-engine',
           (text: string) => { response = text; },
-          projectContext
+          projectContext,
+          activeStep.taskType || undefined  // Use step's own taskType for routing
         );
 
         if (!response || response.length < 50) {
