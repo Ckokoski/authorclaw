@@ -62,6 +62,13 @@ export type CreateFollowUpProjectFunc = (
   originalType: string
 ) => Promise<string | null>;
 
+/**
+ * Callback for idle tasks — runs when the autonomous agent wakes up
+ * but has no active projects. Should do something genuinely helpful
+ * and additive (never destructive). Uses free-tier AI only.
+ */
+export type IdleTaskFunc = () => Promise<string | null>;
+
 export interface AgentJournalEntry {
   timestamp: string;
   type: 'wake' | 'step' | 'decision' | 'difficulty' | 'plan' | 'improve' | 'idle';
@@ -85,6 +92,8 @@ export class HeartbeatService {
   private statusBroadcast: StatusBroadcastFunc | null = null;
   private analyzeProject: AnalyzeProjectFunc | null = null;
   private createFollowUpProject: CreateFollowUpProjectFunc | null = null;
+  private idleTask: IdleTaskFunc | null = null;
+  private lastIdleTaskDate: string | null = null; // Only run idle tasks once per day
   private autonomousPaused = false;
   private isRunning = false; // Prevent overlapping autonomous runs
   private journal: AgentJournalEntry[] = [];
@@ -118,13 +127,15 @@ export class HeartbeatService {
     listProjects: AutonomousProjectListFunc,
     broadcast: StatusBroadcastFunc,
     analyzeProject?: AnalyzeProjectFunc,
-    createFollowUp?: CreateFollowUpProjectFunc
+    createFollowUp?: CreateFollowUpProjectFunc,
+    idleTask?: IdleTaskFunc
   ): void {
     this.autonomousRunStep = runStep;
     this.autonomousListProjects = listProjects;
     this.statusBroadcast = broadcast;
     this.analyzeProject = analyzeProject || null;
     this.createFollowUpProject = createFollowUp || null;
+    this.idleTask = idleTask || null;
   }
 
   start(): void {
@@ -429,7 +440,23 @@ export class HeartbeatService {
         .sort((a, b) => b.score - a.score);
 
       if (scored.length === 0) {
-        this.logAutonomous('No projects need work — idle', 'idle');
+        // No active projects — run an idle task if available (max once per day)
+        const today = new Date().toISOString().split('T')[0];
+        if (this.idleTask && this.lastIdleTaskDate !== today) {
+          this.logAutonomous('No projects — running helpful idle task...', 'idle');
+          try {
+            const result = await this.idleTask();
+            if (result) {
+              this.lastIdleTaskDate = today;
+              this.logAutonomous(`Idle task completed: ${result.substring(0, 100)}`, 'idle');
+              this.broadcast(`💡 ${result}`);
+            }
+          } catch (err) {
+            this.logAutonomous(`Idle task failed: ${err}`, 'difficulty');
+          }
+        } else {
+          this.logAutonomous('No projects need work — idle', 'idle');
+        }
         this.isRunning = false;
         return;
       }

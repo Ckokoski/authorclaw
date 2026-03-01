@@ -235,7 +235,7 @@ class AuthorClawGateway {
     await this.tts.initialize();
 
     // ── Phase 6d: Project Engine ──
-    this.projectEngine = new ProjectEngine(this.authorOS);
+    this.projectEngine = new ProjectEngine(this.authorOS, ROOT_DIR);
     // Wire AI capabilities for dynamic planning
     this.projectEngine.setAI(
       (request) => this.aiRouter.complete(request),
@@ -336,6 +336,45 @@ class AuthorClawGateway {
             metadata: { insights: parsed.insights?.length, strengths: parsed.strengths?.length },
           });
 
+          // ── Core Lessons Consolidation ──
+          // Every 5 entries, distill ALL insights into a persistent "Core Lessons" file.
+          // This prevents old improvements from being forgotten as new ones are added.
+          // Core Lessons get injected into future project system prompts.
+          if (log.length % 5 === 0 && log.length >= 5) {
+            try {
+              const allInsights = log.flatMap((l: any) => l.insights || []);
+              const allStrengths = log.flatMap((l: any) => l.strengths || []);
+              const allWeaknesses = log.flatMap((l: any) => l.weaknesses || []);
+
+              const consolidateResult = await this.aiRouter.complete({
+                provider: provider.id,
+                system: 'You are a writing coach creating a persistent learning document. Distill patterns from many observations into timeless, actionable principles. Remove duplicates. Keep the most important lessons. Be concise — each lesson should be 1-2 sentences max.',
+                messages: [{
+                  role: 'user' as const,
+                  content: `Consolidate these observations from ${log.length} completed writing projects into Core Lessons.\n\n` +
+                    `ALL INSIGHTS:\n${allInsights.map((i: string, n: number) => `${n + 1}. ${i}`).join('\n')}\n\n` +
+                    `ALL STRENGTHS:\n${allStrengths.map((s: string, n: number) => `${n + 1}. ${s}`).join('\n')}\n\n` +
+                    `ALL WEAKNESSES:\n${allWeaknesses.map((w: string, n: number) => `${n + 1}. ${w}`).join('\n')}\n\n` +
+                    `Create a concise Core Lessons document with these sections:\n` +
+                    `1. TOP PRINCIPLES (5-7 most important writing lessons learned)\n` +
+                    `2. PROVEN STRENGTHS (3-5 things to keep doing)\n` +
+                    `3. RECURRING WEAKNESSES (3-5 things to actively avoid)\n` +
+                    `4. STYLE NOTES (any consistent voice/style observations)\n\n` +
+                    `Write in second person ("You tend to..." / "Your strength is..."). Be specific and actionable. Max 500 words total.`,
+                }],
+              });
+
+              const coreLessonsPath = join(agentDir, 'core-lessons.md');
+              const coreLessonsContent = `# AuthorClaw Core Lessons\n\n` +
+                `*Auto-consolidated from ${log.length} project analyses on ${new Date().toISOString().split('T')[0]}*\n\n` +
+                consolidateResult.text;
+              await fs.writeFile(coreLessonsPath, coreLessonsContent, 'utf-8');
+              console.log(`  🧠 Core Lessons consolidated from ${log.length} analyses`);
+            } catch (consolidateErr) {
+              console.log(`  ⚠ Core Lessons consolidation failed: ${consolidateErr}`);
+            }
+          }
+
           return parsed;
         } catch {
           return null;
@@ -364,6 +403,61 @@ class AuthorClawGateway {
         });
 
         return project.id;
+      },
+      // Idle task: do something genuinely helpful when no projects are active
+      // Runs max once per day, uses free-tier AI only, never destructive
+      async () => {
+        const idleTasks = [
+          {
+            label: 'Writing prompt of the day',
+            prompt: `Generate a creative, inspiring writing prompt for an author. Consider diverse genres and styles. The prompt should:\n- Be specific enough to start writing immediately\n- Include a character, setting, and conflict/situation\n- Be 2-3 sentences max\n- Feel fresh and unexpected, not cliché\n\nReturn ONLY the writing prompt, nothing else.`,
+          },
+          {
+            label: 'Workspace productivity report',
+            prompt: `You are a helpful writing assistant. Generate a brief, motivating daily check-in message for an author. Include:\n- An encouraging observation about consistency\n- One specific, actionable writing tip they can use today\n- A thought-provoking question about their current work\n\nKeep it under 100 words. Be warm but not cheesy. Return ONLY the message.`,
+          },
+          {
+            label: 'Story idea brainstorm',
+            prompt: `Brainstorm 3 unique story ideas that would make compelling novels. For each idea provide:\n- A one-line logline\n- The genre\n- What makes it fresh/unique\n\nMake them diverse — different genres, tones, and themes. Be creative and specific. No clichés.`,
+          },
+        ];
+
+        // Pick a random task
+        const task = idleTasks[Math.floor(Math.random() * idleTasks.length)];
+
+        try {
+          const provider = this.aiRouter.selectProvider('general');
+          const result = await this.aiRouter.complete({
+            provider: provider.id,
+            system: 'You are AuthorClaw, an AI writing agent. Be helpful, creative, and concise.',
+            messages: [{ role: 'user' as const, content: task.prompt }],
+            maxTokens: 500,
+          });
+
+          if (result.text && result.text.length > 20) {
+            // Save to workspace
+            const idleDir = join(ROOT_DIR, 'workspace', '.agent');
+            await fs.mkdir(idleDir, { recursive: true });
+            const dateStr = new Date().toISOString().split('T')[0];
+            await fs.writeFile(
+              join(idleDir, `idle-${dateStr}.md`),
+              `# ${task.label}\n*Generated ${new Date().toISOString()}*\n\n${result.text}`,
+              'utf-8'
+            );
+
+            this.activityLog.log({
+              type: 'system',
+              source: 'internal',
+              message: `Idle task: ${task.label}`,
+              metadata: { taskType: task.label },
+            });
+
+            return `${task.label}: ${result.text.substring(0, 200)}`;
+          }
+          return null;
+        } catch {
+          return null;
+        }
       }
     );
 
@@ -984,7 +1078,7 @@ class AuthorClawGateway {
         });
 
         // Build project context and inject the relevant skill if specified
-        let projectContext = gateway.projectEngine.buildProjectContext(project, activeStep);
+        let projectContext = await gateway.projectEngine.buildProjectContext(project, activeStep);
 
         // If the step references a specific skill, inject its full content
         const stepSkill = (activeStep as any).skill;

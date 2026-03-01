@@ -623,7 +623,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     }
 
     try {
-      const projectContext = engine.buildProjectContext(project, activeStep);
+      const projectContext = await engine.buildProjectContext(project, activeStep);
       const userMessage = await buildStepUserMessage(project, activeStep);
       let response = '';
 
@@ -710,7 +710,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       if (!activeStep) break;
 
       try {
-        const projectContext = engine.buildProjectContext(currentProject, activeStep);
+        const projectContext = await engine.buildProjectContext(currentProject, activeStep);
         const userMessage = await buildStepUserMessage(currentProject, activeStep);
         let response = '';
 

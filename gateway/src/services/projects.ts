@@ -19,6 +19,9 @@
 
 import { AuthorOSService } from './author-os.js';
 import type { SkillCatalogEntry } from '../skills/loader.js';
+import { readFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import { join } from 'path';
 
 // ═══════════════════════════════════════════════════════════
 // Types
@@ -47,6 +50,7 @@ export type ProjectType =
   | 'worldbuild'
   | 'writing'
   | 'revision'
+  | 'deep-revision'
   | 'promotion'
   | 'analysis'
   | 'export'
@@ -303,6 +307,323 @@ const PROJECT_TEMPLATES: ProjectTemplate[] = [
       },
     ],
   },
+  // ── Deep Revision Pipeline: 13 steps — beta readers + technical analysis + big picture ──
+  {
+    type: 'deep-revision',
+    label: 'Deep Revision Pipeline',
+    description: 'Comprehensive manuscript analysis: 5 beta readers with unique perspectives, technical editing passes, and big-picture story review',
+    steps: [
+      // ── Phase 1: Beta Reader Panel (5 readers, 5 lenses) ──
+      {
+        label: 'Beta Reader #1 — The Casual Reader',
+        skill: 'beta-reader',
+        taskType: 'revision',
+        promptTemplate: `You are a casual reader — you read for fun and entertainment, not to analyze craft. You read one book a week across all genres. You're honest but not mean.
+
+Read this manuscript and give your gut reactions:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+Your feedback should cover:
+- Where did you get hooked? Where did you lose interest or skim?
+- Which characters did you love? Which ones felt flat or annoying?
+- Were there any confusing parts where you had to re-read?
+- Did the ending satisfy you? Did it feel earned?
+- Rate your overall enjoyment: 1-10
+- "Would I recommend this to a friend?" — Yes/No and why
+- The ONE thing you'd change if you could
+
+Be specific — cite chapter numbers and scenes. Don't use craft terminology. React like a real reader.`,
+      },
+      {
+        label: 'Beta Reader #2 — The Genre Expert',
+        skill: 'beta-reader',
+        taskType: 'revision',
+        promptTemplate: `You are a genre expert who has read 500+ books in this genre. You know every trope, convention, and reader expectation. You review for genre-focused book blogs.
+
+Analyze this manuscript through a genre lens:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+Your analysis should cover:
+- Does this deliver on genre promises? What tropes are used well vs poorly?
+- How does the pacing compare to successful books in this genre?
+- Are the genre conventions met or subverted intentionally?
+- Where does this fit in the current market? What comp titles come to mind?
+- What would genre-specific readers love about this? What would frustrate them?
+- Does the opening chapter hook match genre expectations?
+- Rate genre execution: 1-10
+- What 3 things would make this more competitive in the genre?
+
+Be specific with chapter references. Compare to successful published books when relevant.`,
+      },
+      {
+        label: 'Beta Reader #3 — The English Professor',
+        skill: 'beta-reader',
+        taskType: 'revision',
+        promptTemplate: `You are a university literature professor who studies narrative craft. You appreciate both commercial and literary fiction. You've published academic papers on story structure and prose style.
+
+Analyze this manuscript from a literary craft perspective:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+Your analysis should cover:
+- Theme coherence: Is there a clear thematic argument? Is it developed consistently?
+- Symbolism and motifs: Are there recurring images or symbols? Do they work?
+- Narrative structure: Does the structure serve the story? Any structural innovations or problems?
+- Prose quality: Sentence-level craft. Rhythm, imagery, precision of language
+- Character complexity: Are characters psychologically believable? Do they have depth?
+- Point of view: Is the POV choice effective? Any POV violations or inconsistencies?
+- Subtext: Is there enough happening beneath the surface of dialogue and action?
+- Rate literary merit: 1-10
+- Top 3 craft-level improvements that would elevate this manuscript
+
+Cite specific passages and chapters. Use craft terminology but explain your reasoning.`,
+      },
+      {
+        label: 'Beta Reader #4 — The Harsh Critic',
+        skill: 'beta-reader',
+        taskType: 'revision',
+        promptTemplate: `You are a brutally honest book critic. You don't sugarcoat. You've seen every mistake new authors make and you have zero patience for lazy writing. Your reviews are feared but respected because you're always right.
+
+Tear this manuscript apart (constructively):
+
+**Manuscript**: "{{title}}" — {{description}}
+
+Your critique must cover:
+- Plot holes: List every logical inconsistency, unanswered question, and dropped thread
+- Weak motivations: Where do characters do things "because the plot needs them to"?
+- Pacing problems: Where does the story drag? Where does it rush?
+- Dialogue issues: Where does dialogue sound wooden, expository, or all-same-voice?
+- Clichés and lazy writing: Flag every cliché, every "suddenly," every telling-not-showing
+- Opening weakness: Does the first page earn the second page? Be honest.
+- Ending problems: Is the resolution earned or contrived?
+- The single biggest structural problem with this manuscript
+- Top 5 things to fix FIRST (in priority order)
+
+Be specific. Quote bad passages. Don't hold back — but make every criticism actionable.`,
+      },
+      {
+        label: 'Beta Reader #5 — The Target Reader',
+        skill: 'beta-reader',
+        taskType: 'revision',
+        promptTemplate: `You are the ideal target reader for this book. You are the person this was written FOR. You're emotionally invested in finding great books in this genre. You're active on BookTok/Bookstagram and you write passionate reviews.
+
+Read this with your heart, not just your head:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+Your emotional reader response:
+- What was your emotional journey? Map your feelings chapter by chapter
+- Which scenes hit you hardest? Which ones fell flat emotionally?
+- Which character relationship meant the most to you? Why?
+- Was there a moment that made you tear up, gasp, or say "oh no"?
+- Did you feel satisfied at the end? What lingered with you after?
+- Would you pre-order the sequel? Why or why not?
+- What would you say in a 5-star review? What would you say in a 3-star review?
+- Rate emotional impact: 1-10
+- The ONE scene you'd tell your book club about
+- What this book made you FEEL (the most important answer)
+
+Write from the heart. Be genuine. React like a real passionate reader.`,
+      },
+
+      // ── Phase 2: Technical Analysis (5 passes) ──
+      {
+        label: 'Word & Phrase Overuse Report',
+        skill: 'revise',
+        taskType: 'revision',
+        promptTemplate: `Perform a detailed word and phrase overuse analysis on this manuscript:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+Analyze and report on:
+1. **Overused words**: List any words that appear with unusual frequency. Flag: adverbs (suddenly, quickly, softly), weak verbs (was, had, got, went), filler words (just, really, very, quite, actually, basically)
+2. **Crutch phrases**: Repeated phrases or sentence structures the author relies on
+3. **AI-sounding words**: Flag any instances of: delve, tapestry, testament, visceral, juxtaposition, nuanced, multifaceted, intricate, profound, resonate, landscape, paradigm, embark, foster, cornerstone, pivotal, myriad, plethora, beacon, crucible, realm
+4. **Repetitive sentence openers**: Do too many sentences start the same way?
+5. **Dialogue tag variety**: Is "said" overused? Are action beats used effectively?
+6. **Adverb density**: How many adverbs per 1000 words? (target: < 5)
+7. **Passive voice frequency**: How much passive voice? (target: < 10%)
+
+For each issue, provide:
+- The word/phrase
+- Approximate frequency
+- Example from the text
+- Suggested alternatives or fixes
+
+Prioritize by severity. The author should fix the worst offenders first.`,
+      },
+      {
+        label: 'Dialogue Audit',
+        skill: 'revise',
+        taskType: 'revision',
+        promptTemplate: `Perform a comprehensive dialogue audit on this manuscript:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+Analyze every aspect of dialogue quality:
+
+1. **Voice distinctiveness**: Can you tell characters apart by HOW they speak? Rate each major character's voice uniqueness (1-10). Do any characters sound identical?
+2. **Dialogue tags vs action beats**: What's the ratio? Are tags invisible or distracting? Examples of good and bad usage.
+3. **Info-dumping through dialogue**: Flag any "As you know, Bob..." moments where characters explain things they already know
+4. **Subtext quality**: Do characters say what they mean, or is there tension between what's said and what's meant? Best and worst examples
+5. **Dialogue pacing**: Are conversations the right length? Any that go on too long or end too abruptly?
+6. **Character speech patterns**: Note any unique patterns (catchphrases, verbal tics, vocabulary level, sentence length) for each character
+7. **Emotional authenticity**: Does dialogue ring true in emotional scenes? Flag any moments that feel forced
+
+Provide specific examples with chapter/scene references. Suggest rewrites for the worst offenders.`,
+      },
+      {
+        label: 'Show vs Tell Scanner',
+        skill: 'revise',
+        taskType: 'revision',
+        promptTemplate: `Scan this manuscript for show vs tell issues:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+For each instance found:
+
+1. **Emotional telling**: Flag passages that name emotions directly ("She was angry," "He felt sad") instead of showing them through action, body language, or internal sensation
+2. **Character description telling**: "She was beautiful" vs showing beauty through specific details and others' reactions
+3. **Backstory dumps**: Paragraphs of exposition that could be dramatized or woven in naturally
+4. **Motivation telling**: "He wanted revenge" vs showing the desire through behavior
+5. **Atmosphere telling**: "The room was creepy" vs sensory details that create the feeling
+
+For the 10 worst offenders:
+- Quote the original "telling" passage
+- Write a "showing" alternative
+- Explain why the rewrite is stronger
+
+Also note: some telling is FINE. Not everything needs to be shown. Flag the cases where showing would genuinely improve the reader's experience. Don't nitpick functional transitions.`,
+      },
+      {
+        label: 'Pacing Heatmap',
+        skill: 'revise',
+        taskType: 'revision',
+        promptTemplate: `Create a chapter-by-chapter pacing analysis for this manuscript:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+For EACH chapter, provide:
+
+| Chapter | Tension (1-10) | Pacing | Scene Types | Energy | Notes |
+|---------|---------------|--------|-------------|--------|-------|
+
+**Scene type categories**: Action, Dialogue, Reflection, Exposition, Transition, Revelation, Emotional, Romance, Conflict
+
+**Pacing categories**: Too Fast, Fast, Good, Slow, Too Slow, Draggy
+
+**Analysis summary**:
+1. **Overall pacing curve**: Does tension rise properly? Is there a clear three-act structure?
+2. **Energy valleys**: Which chapters are the slowest? Should any be cut or combined?
+3. **Energy peaks**: Are climactic moments properly set up? Do they land?
+4. **Action-to-reflection ratio**: Is there enough breathing room between high-energy scenes?
+5. **Chapter length consistency**: Are any chapters significantly longer/shorter? Does that serve the story?
+6. **Opening momentum**: Do the first 3 chapters build enough momentum to keep a reader going?
+7. **Midpoint assessment**: Is there a compelling midpoint shift?
+8. **Final act pacing**: Does the climax build properly? Is the resolution too rushed or too drawn out?
+
+End with your top 3 pacing fixes, prioritized by impact.`,
+      },
+      {
+        label: 'Continuity & Consistency Check',
+        skill: 'revise',
+        taskType: 'consistency',
+        promptTemplate: `Run a thorough continuity and consistency check across the entire manuscript:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+Check for EVERY type of inconsistency:
+
+1. **Character appearance**: Do physical descriptions stay consistent? (eye color, hair, height, scars, etc.)
+2. **Timeline errors**: Do days, dates, seasons, and time-of-day references add up?
+3. **Setting contradictions**: Do locations stay consistent? (room layouts, geography, distances)
+4. **Character knowledge**: Does any character know something they shouldn't yet?
+5. **Name consistency**: Any spelling variations of character or place names?
+6. **Technology/Magic rules**: Are the rules of the world applied consistently?
+7. **Relationship continuity**: Do character relationships progress logically?
+8. **Dropped threads**: Any plot points, objects, or promises that are set up but never resolved?
+9. **Dead characters**: Does anyone "die" but appear later without explanation?
+10. **Emotional continuity**: Do emotional states carry between scenes logically?
+
+For each issue found:
+- Where it first appears (chapter/scene)
+- Where the contradiction occurs
+- What the discrepancy is
+- Suggested fix
+
+Organize by severity: Critical (breaks the story) → Important (sharp readers will notice) → Minor (copyedit level).`,
+      },
+
+      // ── Phase 3: Big Picture Review (2 steps) ──
+      {
+        label: 'Opening Hook & First Chapter Strength',
+        skill: 'revise',
+        taskType: 'revision',
+        promptTemplate: `Analyze the opening strength of this manuscript with the ruthlessness of a literary agent who reads 100 queries a week:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+**First Page Test** (would an agent keep reading?):
+- Does the first line intrigue?
+- Is there a character with a problem in the first paragraph?
+- Is there forward momentum in the first page?
+- Rate first page: 1-10
+
+**First Chapter Test**:
+- Does it establish voice, character, and stakes?
+- Is the inciting incident clear or hinted at?
+- Does the chapter ending make you NEED to read chapter 2?
+- What questions does it plant in the reader's mind?
+- Rate first chapter: 1-10
+
+**First Three Chapters Test**:
+- By the end of chapter 3, do we understand the protagonist's want, need, and obstacle?
+- Is the genre clear? The tone established?
+- Has the story earned the reader's commitment to finish?
+- Rate first three chapters: 1-10
+
+**Agent's Verdict**: If this crossed your desk:
+- Would you request a full manuscript? Why or why not?
+- What would make you say "yes" immediately?
+- What specific changes would upgrade this from "pass" to "request"?
+
+If the opening is weak, suggest a specific alternative opening scene or first line.`,
+      },
+      {
+        label: 'Final Assessment & Revision Action Plan',
+        skill: 'revise',
+        taskType: 'revision',
+        promptTemplate: `You have now reviewed this manuscript from every angle — as 5 different beta readers, through technical analysis, and from a structural perspective. Synthesize ALL findings into a final actionable revision plan:
+
+**Manuscript**: "{{title}}" — {{description}}
+
+**Synthesis Report**:
+
+1. **Overall Grade**: A through F, with honest justification
+2. **What's Working Brilliantly** (top 3-5 strengths across all reviews):
+   - What should the author KEEP and lean into?
+3. **Critical Fixes** (must-do before publication, ranked by priority):
+   - List the 5-7 most important changes with specific instructions
+4. **Important Improvements** (should-do, will significantly improve quality):
+   - List 5-7 secondary improvements
+5. **Nice-to-Have Polish** (optional refinements for final draft):
+   - List 3-5 minor improvements
+6. **Revision Roadmap** (what order to tackle changes):
+   - Pass 1: [What to fix first and why]
+   - Pass 2: [What to fix second]
+   - Pass 3: [Final polish items]
+7. **Market Readiness Assessment**:
+   - Is this ready for beta readers? For an agent? For self-publishing?
+   - What milestone should the author hit before sending this out?
+8. **Encouraging Close**:
+   - What makes this manuscript special and worth finishing?
+
+This is the author's revision bible. Make it specific, actionable, and honest. Every recommendation should include WHERE in the manuscript it applies and HOW to fix it.`,
+      },
+    ],
+  },
   {
     type: 'promotion',
     label: 'Marketing & Promotion',
@@ -387,12 +708,16 @@ const PROJECT_TEMPLATES: ProjectTemplate[] = [
 export class ProjectEngine {
   private projects: Map<string, Project> = new Map();
   private authorOS: AuthorOSService | null;
+  private rootDir: string;
   private nextId = 1;
   private aiComplete: AICompleteFunc | null = null;
   private aiSelectProvider: AISelectProviderFunc | null = null;
+  private coreLessonsCache: string | null = null;
+  private coreLessonsCacheTime = 0;
 
-  constructor(authorOS?: AuthorOSService) {
+  constructor(authorOS?: AuthorOSService, rootDir?: string) {
     this.authorOS = authorOS || null;
+    this.rootDir = rootDir || process.cwd();
   }
 
   /**
@@ -939,7 +1264,7 @@ Description: ${description}`;
    * Build the system prompt addition for a project step.
    * This tells the AI what context it's operating in.
    */
-  buildProjectContext(project: Project, step: ProjectStep): string {
+  async buildProjectContext(project: Project, step: ProjectStep): Promise<string> {
     let context = `\n# Current Project\n\n`;
     context += `**Project**: ${project.title}\n`;
     context += `**Type**: ${project.type}\n`;
@@ -979,6 +1304,13 @@ Description: ${description}`;
       } else {
         context += uploaded + '\n\n';
       }
+    }
+
+    // Inject Core Lessons from self-improvement analysis (if available)
+    // These are distilled insights from all previous completed projects
+    const coreLessons = await this.getCoreLessons();
+    if (coreLessons) {
+      context += `\n## Writing Lessons Learned\n\n${coreLessons}\n\n`;
     }
 
     // Add Author OS tool suggestion with actionable instructions
@@ -1179,6 +1511,11 @@ Description: ${description}`;
       return 'writing';
     }
 
+    // Deep revision signals — must come before general revision
+    if (lower.match(/\b(deep.?revis|deep.?edit|full.?revision|manuscript.?review|beta.?reader|comprehensive.?edit|revision.?pipeline|deep.?analysis|manuscript.?analysis|manuscript.?audit)\b/)) {
+      return 'deep-revision';
+    }
+
     // Revision signals
     if (lower.match(/\b(edit|revise|rewrite|feedback|critique|proofread|consistency|beta read)\b/)) {
       return 'revision';
@@ -1203,6 +1540,41 @@ Description: ${description}`;
     return 'custom';
   }
 
+  // ── Core Lessons (self-improvement feedback loop) ──
+
+  /**
+   * Load Core Lessons from the self-improvement analysis file.
+   * Cached for 5 minutes to avoid re-reading disk every step.
+   * Returns null if no core lessons exist yet.
+   */
+  private async getCoreLessons(): Promise<string | null> {
+    const now = Date.now();
+    // Return cached version if less than 5 minutes old
+    if (this.coreLessonsCache !== null && (now - this.coreLessonsCacheTime) < 300000) {
+      return this.coreLessonsCache;
+    }
+
+    const coreLessonsPath = join(this.rootDir, 'workspace', '.agent', 'core-lessons.md');
+    if (!existsSync(coreLessonsPath)) {
+      this.coreLessonsCache = null;
+      this.coreLessonsCacheTime = now;
+      return null;
+    }
+
+    try {
+      const content = await readFile(coreLessonsPath, 'utf-8');
+      // Strip the header, just get the lessons content (max 1500 chars to not bloat context)
+      const body = content.replace(/^#.*\n\n\*[^*]+\*\n\n/, '').trim();
+      this.coreLessonsCache = body.length > 1500 ? body.substring(0, 1500) + '\n...' : body;
+      this.coreLessonsCacheTime = now;
+      return this.coreLessonsCache;
+    } catch {
+      this.coreLessonsCache = null;
+      this.coreLessonsCacheTime = now;
+      return null;
+    }
+  }
+
   // ── Private Helpers ──
 
   private expandTemplate(template: string, vars: Record<string, any>): string {
@@ -1225,6 +1597,7 @@ Description: ${description}`;
       worldbuild: 'book_bible',
       writing: 'creative_writing',
       revision: 'revision',
+      'deep-revision': 'revision',
       promotion: 'marketing',
       analysis: 'style_analysis',
       export: 'general',
