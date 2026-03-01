@@ -1357,7 +1357,7 @@ function showProjectFiles(projectId, projectTitle) {
     }
 
     // Find the project card and insert the file list below the actions
-    var cards = document.querySelectorAll('#projectList .gi-item');
+    var cards = document.querySelectorAll('#projectList .project-item');
     var targetCard = null;
     cards.forEach(function(card) {
       if (card.querySelector('.gi-actions') && card.textContent.indexOf(projectTitle) !== -1) {

@@ -1,188 +1,160 @@
-AuthorClaw Skills Reference
-===========================
-39 skills loaded. Just chat naturally — AuthorClaw picks the right skill
-based on keywords in your message. Examples below each skill.
+AUTHORCLAW SKILLS REFERENCE
+Auto-generated on startup — 37 skills loaded
+════════════════════════════════════════════════════════════
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+── Core Skills (7) ──
 
-CORE (7) — System learning and self-improvement
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  after-action-review
+    Structured post-goal reflection that extracts lessons, evaluates quality, and feeds the self-improvement loop
+    Keywords: after action review, review goal, post mortem, what went well, what went wrong, retrospective, goal review, debrief
 
-After Action Review
-  Review what went well, what went wrong, and extract lessons
-  Try: "do an after action review" / "what went well" / "retrospective"
+  error-recovery
+    Intelligent error diagnosis, automatic recovery strategies, and prevention of recurring failures
+    Keywords: error, fix error, something broke, failed, not working, debug, troubleshoot, diagnose, recovery
 
-Error Recovery
-  Diagnose and fix errors automatically
-  Try: "something broke" / "fix error" / "debug this" / "not working"
+  full-pipeline
+    Write a complete novel from scratch — premise through final manuscript
+    Keywords: full pipeline, conductor, write a full book, write entire, complete novel, end to end, from start to finish, write the whole, full novel, entire book
 
-Full Pipeline
-  Write a complete novel from premise to final manuscript
-  Try: "write a full book" / "complete novel" / "from start to finish"
+  preference-learner
+    Tracks user preferences, writing habits, and communication style to personalize every interaction
+    Keywords: my preferences, remember that I, I prefer, I like, I don't like, I always want, I never want, update preferences, show preferences, preference
 
-Preference Learner
-  Tracks your preferences and habits to personalize responses
-  Try: "I prefer X" / "remember that I" / "show preferences"
+  prompt-optimizer
+    Automatically improves prompts based on output quality, user feedback, and A/B testing results
+    Keywords: optimize prompt, improve prompt, better prompt, prompt quality, test prompts, prompt a/b test, prompt lab
 
-Prompt Optimizer
-  Improves prompts based on output quality and A/B testing
-  Try: "optimize prompt" / "better prompt" / "prompt lab"
+  self-improve
+    Continuous self-improvement loop — AuthorClaw learns from mistakes, successes, and user feedback to get better over time
+    Keywords: self improve, improve yourself, learn from, what did you learn, improvement log, get better, lessons learned, self reflection, review performance
 
-Self-Improve
-  AuthorClaw learns from mistakes and feedback to get better
-  Try: "self improve" / "what did you learn" / "review performance"
+  skill-acquisition
+    
+    Keywords: learn how to, add a skill for, find a tool for, go learn, research and create a skill, teach yourself, acquire skill, learn about
 
-Skill Acquisition
-  Learns new skills on demand from user requests
-  Try: "learn how to X" / "add a skill for X" / "teach yourself X"
+── Author Skills (17) ──
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  beta-reader
+    Simulate beta reader feedback from different reader perspectives
+    Keywords: beta read, beta reader, reader feedback, test reader, would readers
 
-AUTHOR (17) — Writing, editing, and manuscript management
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  book-bible
+    Maintain world consistency - characters, timeline, locations, rules, items
+    Keywords: book bible, character, character sheet, timeline, world building, world bible, consistency, continuity
 
-Beta Reader
-  Simulate beta reader feedback from different reader perspectives
-  Try: "beta read this" / "reader feedback" / "would readers like this"
+  dialogue
+    Craft authentic dialogue with distinct character voices and subtext
+    Keywords: dialogue, conversation, character voice, how would they say, make them talk
 
-Book Bible
-  Maintain world consistency — characters, timeline, locations, rules
-  Try: "book bible" / "character sheet" / "world building" / "timeline"
+  format
+    Export manuscripts to DOCX, EPUB, PDF, KDP-ready formatting
+    Keywords: format, export, epub, kindle, KDP, pdf, docx, manuscript format
 
-Dialogue
-  Craft authentic dialogue with distinct character voices
-  Try: "write dialogue" / "character voice" / "make them talk"
+  ingest-tool
+    Read source code of any tool and generate an AuthorClaw skill from it
+    Keywords: ingest tool, create skill from, import tool, make a skill, convert to skill, read this code, analyze this tool
 
-Format
-  Export manuscripts to DOCX, EPUB, PDF, KDP-ready
-  Try: "format for kindle" / "export epub" / "manuscript format"
+  manuscript-hub
+    Track word count, chapters, progress, streaks, and project status
+    Keywords: word count, progress, manuscript status, how's my book, writing streak, new project, start a new
 
-Ingest Tool
-  Read source code and convert it into an AuthorClaw skill
-  Try: "ingest tool" / "create skill from this" / "import tool"
+  market-research
+    Analyze comp titles, genre trends, pricing strategies, and market positioning
+    Keywords: market research, comp titles, genre trends, pricing, bestseller, competition
 
-Manuscript Hub
-  Track word count, chapters, progress, and writing streaks
-  Try: "word count" / "progress" / "how's my book" / "writing streak"
+  nonfiction-research
+    Academic source gathering, citation management, fact-checking for nonfiction
+    Keywords: nonfiction, citation, cite, bibliography, source, academic, fact check, reference
 
-Market Research
-  Analyze comp titles, genre trends, and pricing strategies
-  Try: "market research" / "comp titles" / "genre trends" / "pricing"
+  outline
+    Create structured outlines using popular frameworks (Save the Cat, 3-Act, Hero's Journey, custom)
+    Keywords: outline, structure, plot, beats, save the cat, hero's journey, three act, story structure
 
-Nonfiction Research
-  Source gathering, citations, fact-checking for nonfiction
-  Try: "citation" / "bibliography" / "fact check" / "academic source"
+  premise
+    Develop compelling story premises with market awareness and emotional hooks
+    Keywords: premise, story idea, book concept, what if, high concept, elevator pitch
 
-Outline
-  Create structured outlines (Save the Cat, 3-Act, Hero's Journey)
-  Try: "outline" / "plot structure" / "save the cat" / "story beats"
+  promote
+    Write blurbs, taglines, social media posts, ad copy, author bios
+    Keywords: promote, blurb, tagline, social media, ad copy, book description, author bio, marketing, amazon description
 
-Premise
-  Develop compelling story premises with emotional hooks
-  Try: "premise" / "story idea" / "what if" / "elevator pitch"
+  query-letter
+    Craft compelling query letters and track submissions to literary agents
+    Keywords: query letter, agent submission, pitch my book, query tracker
 
-Promote
-  Write blurbs, taglines, social media posts, ad copy
-  Try: "promote" / "blurb" / "tagline" / "amazon description"
+  research
+    Constrained internet research with source tracking for fiction and nonfiction projects
+    Keywords: research, look up, find out about, fact check, what is, source
 
-Query Letter
-  Craft query letters and track agent submissions
-  Try: "query letter" / "agent submission" / "pitch my book"
+  revise
+    Multi-pass revision - developmental editing, line editing, copy editing
+    Keywords: revise, edit, improve, rewrite, feedback, critique, review, developmental edit, line edit, copy edit
 
-Research
-  Internet research with source tracking for writing projects
-  Try: "research X" / "look up" / "find out about" / "fact check"
+  series-bible
+    Track multi-book continuity, character arcs across books, series-level planning
+    Keywords: series, series bible, book two, sequel, next book, multi-book, series arc
 
-Revise
-  Multi-pass revision — developmental, line editing, copy editing
-  Try: "revise" / "edit" / "critique" / "developmental edit"
+  style-clone
+    Analyze and match the author's unique writing voice
+    Keywords: learn my style, match my voice, style check, voice profile, analyze my writing, sound like me
 
-Series Bible
-  Track multi-book continuity and series-level arcs
-  Try: "series bible" / "sequel" / "next book" / "multi-book"
+  write
+    Draft scenes, chapters, and passages matching the author's voice and style
+    Keywords: write, draft, write a scene, write chapter, continue writing, write the
 
-Style Clone
-  Analyze and match your unique writing voice
-  Try: "learn my style" / "match my voice" / "voice profile"
+── Marketing Skills (4) ──
 
-Write
-  Draft scenes, chapters, and passages in your voice
-  Try: "write a scene" / "write chapter 3" / "continue writing"
+  ad-copy
+    Write ad copy for Amazon AMS, BookBub, Facebook, and other book advertising platforms
+    Keywords: ad copy, amazon ad, bookbub, facebook ad, advertising
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  blurb-writer
+    Write compelling book blurbs and descriptions for Amazon, Goodreads, and back cover
+    Keywords: blurb, book description, back cover, amazon description
 
-MARKETING (4) — Book promotion and advertising
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  email-list
+    Write email sequences for reader magnets, launches, and ongoing newsletters
+    Keywords: email, newsletter, email sequence, reader magnet, email list, welcome sequence
 
-Ad Copy
-  Write ad copy for Amazon AMS, BookBub, Facebook ads
-  Try: "ad copy" / "amazon ad" / "bookbub ad" / "facebook ad"
+  social-media
+    Create engaging social media content for book promotion across platforms
+    Keywords: social media, twitter, instagram, tiktok, booktok, bookstagram, facebook post
 
-Blurb Writer
-  Write compelling book descriptions for Amazon/Goodreads
-  Try: "write a blurb" / "book description" / "back cover copy"
+── Premium Skills (9) ★ ──
 
-Email List
-  Email sequences for reader magnets, launches, newsletters
-  Try: "email sequence" / "reader magnet" / "welcome sequence"
+  book-launch-machine
+    Complete book launch automation - from pre-launch to post-launch with email sequences, social campaigns, and ad copy generation
+    Keywords: launch, book launch, launch plan, pre-launch, launch day, release, publish, go live
 
-Social Media
-  Create engaging social media content for book promotion
-  Try: "social media post" / "booktok" / "bookstagram" / "twitter"
+  comp-title-finder
+    Find and analyze comparable titles for query letters, marketing, and positioning strategy
+    Keywords: comp title, comp titles, comparable, comparison title, query letter comp, market position, books like mine, similar books
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  dictation-cleanup
+    Transform raw speech-to-text dictation into polished prose while preserving the author's natural voice
+    Keywords: dictation, clean up dictation, speech to text, transcription cleanup, dictated text, voice draft, raw transcript, fix dictation
 
-PREMIUM (11) — Advanced tools (Writing Secrets skill packs)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  first-chapter-hook
+    Analyze and rewrite first chapters for maximum reader retention using genre-specific hook patterns
+    Keywords: first chapter, opening hook, hook analysis, chapter one, first page, opening line, reader retention, hook score
 
-Book Launch Machine
-  Complete launch automation — pre-launch to post-launch campaigns
-  Try: "launch plan" / "book launch" / "pre-launch" / "release day"
+  ghostwriter-pro
+    Advanced AI co-writing with scene generation, pacing analysis, tension mapping, and chapter assembly
+    Keywords: ghostwriter, co-write, write with me, generate scene, pacing analysis, tension map, assemble chapter, deep write
 
-Comp Title Finder
-  Find and analyze comparable titles for queries and positioning
-  Try: "comp titles" / "books like mine" / "similar books"
+  narrative-voice-coach
+    Deep analysis and coaching for developing a distinctive, consistent narrative voice across your manuscript
+    Keywords: voice coach, narrative voice, writing voice, voice analysis, style coaching, find my voice, voice consistency, prose style
 
-Dictation Cleanup
-  Transform raw speech-to-text into polished prose
-  Try: "clean up dictation" / "fix dictation" / "transcription cleanup"
+  read-aloud
+    Text-to-speech read-aloud for manuscripts using free open-source Piper TTS with natural-sounding voices
+    Keywords: read aloud, read this, speak, text to speech, tts, listen, audio preview, read chapter, hear it
 
-First Chapter Hook
-  Analyze and rewrite first chapters for maximum reader retention
-  Try: "first chapter hook" / "opening hook" / "hook score"
+  sensitivity-reader
+    AI-assisted sensitivity review for representation, cultural accuracy, and potential reader concerns
+    Keywords: sensitivity read, sensitivity review, sensitivity check, representation check, cultural review, bias check, inclusive review, sensitivity reader
 
-Ghostwriter Pro
-  Advanced co-writing with scene generation and tension mapping
-  Try: "ghostwriter" / "co-write" / "generate scene" / "deep write"
+  series-architect
+    Complete multi-book series planning, cross-book continuity engine, and arc tracking
+    Keywords: plan series, series architect, multi-book, series outline, cross-book, book series
 
-Narrative Voice Coach
-  Deep coaching for developing a distinctive narrative voice
-  Try: "voice coach" / "narrative voice" / "find my voice"
-
-Read Aloud
-  Text-to-speech for manuscripts using neural voice engine
-  Try: "read aloud" / "read this" / "text to speech" / "listen"
-
-Sensitivity Reader
-  Review for representation, cultural accuracy, reader concerns
-  Try: "sensitivity read" / "representation check" / "bias check"
-
-Series Architect
-  Multi-book series planning with cross-book continuity engine
-  Try: "plan series" / "series architect" / "series outline"
-
-Deep Voice Analysis
-  Advanced 47-marker voice analysis to build your Voice Profile
-  Try: "deep voice analysis" / "writing dna" / "clone my style"
-
-Writing Secrets Bridges (2 integration skills):
-  WS Book Bible Bridge — Import Book Bible Engine JSON data
-    Try: "import book bible" / "sync book bible" / "load bible"
-  WS Workflow Engine Bridge — Import and run workflow sequences
-    Try: "import workflow" / "run workflow" / "execute sequence"
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-TIP: You can also chain skills in projects! Create a project like
-"Revision and Editing" and AuthorClaw runs multi-step workflows
-automatically. Upload your manuscript and let it work.

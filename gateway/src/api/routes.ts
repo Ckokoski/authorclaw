@@ -1346,6 +1346,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       html: 'text/html',
       json: 'application/json',
+      mp3: 'audio/mpeg',
     };
     res.setHeader('Content-Type', mimeTypes[ext || ''] || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
