@@ -966,6 +966,21 @@ Description: ${description}`;
       }
     }
 
+    // Include uploaded manuscript content (from Upload button)
+    if (project.context?.uploadedContent) {
+      const uploads = project.context.uploads || [];
+      const fileList = uploads.map((u: any) => `${u.filename} (${u.wordCount} words)`).join(', ');
+      context += `## Uploaded Manuscript\n\n`;
+      context += `**Files**: ${fileList}\n\n`;
+      // Include up to 30k chars of uploaded content for the AI to work with
+      const uploaded = String(project.context.uploadedContent);
+      if (uploaded.length > 30000) {
+        context += uploaded.substring(0, 30000) + '\n\n[...truncated at 30,000 chars — full text available in workspace...]\n\n';
+      } else {
+        context += uploaded + '\n\n';
+      }
+    }
+
     // Add Author OS tool suggestion with actionable instructions
     if (step.toolSuggestion) {
       const toolInstructions: Record<string, string> = {

@@ -39,16 +39,19 @@
   "license": "MIT",
   "dependencies": {
     "@types/multer": "^2.0.0",
+    "adm-zip": "^0.5.16",
     "cors": "^2.8.5",
     "docx": "^9.6.0",
     "dotenv": "^17.3.1",
     "express": "^4.21.0",
     "helmet": "^8.0.0",
     "multer": "^2.1.0",
+    "node-edge-tts": "^1.2.10",
     "socket.io": "^4.7.0",
     "tsx": "^4.7.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/cors": "^2.8.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",

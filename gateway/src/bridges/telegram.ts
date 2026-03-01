@@ -130,6 +130,7 @@ export class TelegramBridge {
         `/files — List output files (numbered)\n` +
         `/read [# or name] — Read a file\n` +
         `/export [# or name] — Export to Word/HTML/TXT\n` +
+        `/speak [text or #] — Send voice message\n` +
         `/clean — Workspace usage & cleanup\n\n` +
         `Or just chat with me naturally.`);
       return;
@@ -460,6 +461,82 @@ export class TelegramBridge {
       return;
     }
 
+    // ── /speak — Generate voice message on demand ──
+    if (text.startsWith('/speak')) {
+      const args = text.replace(/^\/speak\s*/, '').trim();
+      if (!args) {
+        await this.sendMessage(chatId,
+          `🔊 *Voice Messages:*\n\n` +
+          `/speak Hello, I am AuthorClaw\n` +
+          `/speak narrator_deep In a world...\n` +
+          `/speak 3 — Read file #3 aloud\n\n` +
+          `*Voices:* narrator_female, narrator_male, narrator_deep, narrator_warm, british_male, british_female, storyteller, dramatic`);
+        return;
+      }
+
+      try {
+        // Parse: optional voice preset as first word, then text (or file number)
+        const words = args.split(/\s+/);
+        const voicePresets = ['narrator_female', 'narrator_male', 'narrator_deep', 'narrator_warm', 'british_male', 'british_female', 'storyteller', 'dramatic'];
+        let voice: string | undefined;
+        let speakText = args;
+
+        // Check if first word is a voice preset
+        if (voicePresets.includes(words[0].toLowerCase())) {
+          voice = words[0].toLowerCase();
+          speakText = words.slice(1).join(' ');
+        }
+
+        // Check if it's a file number from /files
+        const num = parseInt(speakText, 10);
+        if (!isNaN(num) && speakText === String(num) && this.lastFileList && num >= 1 && num <= this.lastFileList.length) {
+          const filename = this.lastFileList[num - 1];
+          await this.sendMessage(chatId, `🔊 Reading file #${num} aloud...`);
+          if (this.commandHandlers) {
+            const fileResult = await this.commandHandlers.readFile(filename);
+            if (fileResult.error) {
+              await this.sendMessage(chatId, `⚠️ ${fileResult.error}`);
+              return;
+            }
+            speakText = fileResult.content.substring(0, 50000);
+          }
+        }
+
+        if (!speakText) {
+          await this.sendMessage(chatId, `Nothing to speak. Provide text or a file number.`);
+          return;
+        }
+
+        await this.sendMessage(chatId, `🎙️ Generating audio${voice ? ` (${voice})` : ''}...`);
+
+        // Call the TTS API
+        const ttsRes = await fetch('http://localhost:3847/api/audio/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: speakText, voice }),
+        });
+        const ttsData = await ttsRes.json() as any;
+
+        if (!ttsData.success || !ttsData.file) {
+          await this.sendMessage(chatId, `❌ ${ttsData.error || 'TTS generation failed'}`);
+          return;
+        }
+
+        // Send as Telegram voice message
+        const wordCount = speakText.split(/\s+/).length;
+        const caption = `🔊 ${wordCount} words • ${ttsData.duration ? Math.round(ttsData.duration / 60) + ' min' : ''}`;
+        const sent = await this.sendVoice(chatId, ttsData.file, caption);
+
+        if (!sent) {
+          // Fallback: send as regular message with audio link
+          await this.sendMessage(chatId, `⚠️ Voice upload failed. Listen here:\nhttp://localhost:3847/api/audio/file/${ttsData.filename}`);
+        }
+      } catch (e) {
+        await this.sendMessage(chatId, `❌ Voice error: ${String(e)}`);
+      }
+      return;
+    }
+
     // ── /stop — Pause active project ──
     if (text.startsWith('/stop') || text.startsWith('/pause')) {
       const activeProject = this.commandHandlers
@@ -542,6 +619,59 @@ export class TelegramBridge {
           console.error('Telegram sendMessage failed:', await retry.text());
         }
       }
+    }
+  }
+
+  /** Send a voice message (MP3 file) to a Telegram chat */
+  private async sendVoice(chatId: number, filePath: string, caption?: string): Promise<boolean> {
+    try {
+      const { readFileSync } = await import('fs');
+      const { basename } = await import('path');
+      const audioData = readFileSync(filePath);
+      const filename = basename(filePath);
+
+      // Build multipart form data manually (no external dependency)
+      const boundary = '----AuthorClawVoice' + Date.now();
+      const parts: Buffer[] = [];
+
+      // chat_id field
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`
+      ));
+
+      // caption field (optional)
+      if (caption) {
+        parts.push(Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`
+        ));
+      }
+
+      // audio file field
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="voice"; filename="${filename}"\r\nContent-Type: audio/mpeg\r\n\r\n`
+      ));
+      parts.push(audioData);
+      parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+      const body = Buffer.concat(parts);
+
+      const response = await fetch(`https://api.telegram.org/bot${this.token}/sendVoice`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': String(body.length),
+        },
+        body,
+      });
+
+      if (!response.ok) {
+        console.error('Telegram sendVoice failed:', await response.text());
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error('sendVoice error:', error);
+      return false;
     }
   }
 

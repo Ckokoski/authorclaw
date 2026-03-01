@@ -12,10 +12,17 @@ workspace/.memory/
 workspace/.audit/
 workspace/.agent/
 workspace/.audio/
+workspace/audio/
+workspace/memory/
 workspace/.config/
 workspace/.activity/
+workspace/test-upload.txt
 *.log
 .DS_Store
+nul
+
+# Claude Code config (local dev only)
+.claude/
 
 # Premium skill packs (purchased separately, not bundled)
 skills/premium/*/

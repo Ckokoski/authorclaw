@@ -314,6 +314,7 @@
     </div>
   </div>
 
+
 </div>
 
 <!-- SETTINGS TAB -->
@@ -354,7 +355,7 @@
     <h3>&#129302; AI Providers</h3>
     <div id="providerList"><span style="color:#7f8c8d">Loading...</span></div>
     <div style="margin-top:10px;">
-      <button id="btnRefreshProviders" onclick="refreshProviders()" style="background:#2980b9;font-size:13px;padding:6px 14px;">&#128260; Refresh Providers</button>
+      <button id="btnRefreshProviders" style="background:#2980b9;font-size:13px;padding:6px 14px;">&#128260; Refresh Providers</button>
       <span id="refreshProviderStatus" style="margin-left:10px;font-size:13px;color:#7f8c8d;"></span>
     </div>
   </div>
@@ -674,6 +675,7 @@ function refreshProviders() {
     status.style.color = '#e74c3c';
   });
 }
+document.getElementById('btnRefreshProviders').addEventListener('click', refreshProviders);
 
 // ── Load Keys from Files ──
 document.getElementById('btnLoadFromFiles').addEventListener('click', function() {
@@ -1387,9 +1389,11 @@ function showProjectFiles(projectId, projectTitle) {
           'title="Download ' + esc(f.name) + '">\u2B07 Download</a>' +
       '</div>';
     });
-    var closeRow = '<div style="text-align:right;margin-top:8px;"><span style="color:#7f8c8d;cursor:pointer;font-size:12px;" onclick="this.parentElement.parentElement.remove()">Close</span></div>';
+    var closeRow = '<div style="text-align:right;margin-top:8px;"><span class="file-panel-close" style="color:#7f8c8d;cursor:pointer;font-size:12px;">Close</span></div>';
     filePanel.innerHTML = header + fileRows + closeRow;
     targetCard.appendChild(filePanel);
+    var closeBtn = filePanel.querySelector('.file-panel-close');
+    if (closeBtn) closeBtn.addEventListener('click', function() { filePanel.remove(); });
   }).catch(function(e) {
     showToast('Failed to load files: ' + e.message, 'error');
   });
@@ -1845,7 +1849,7 @@ function triggerProjectUpload(projectId) {
     .then(function(res) { return res.json(); })
     .then(function(data) {
       if (data.success) {
-        showToast('Uploaded ' + file.name + ' (' + (data.textLength || 0) + ' chars extracted)', 'success');
+        showToast('Uploaded ' + file.name + ' (' + (data.wordCount || 0) + ' words extracted)', 'success');
         loadProjects();
       } else {
         showToast('Upload failed: ' + (data.error || 'Unknown'), 'error');

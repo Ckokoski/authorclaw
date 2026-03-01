@@ -807,21 +807,32 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     if (ext === 'txt' || ext === 'md') {
       textContent = req.file.buffer.toString('utf-8');
     } else if (ext === 'docx') {
-      // Extract text from docx — simple XML-based extraction (no mammoth dependency)
+      // Extract text from docx — unzip the archive and parse word/document.xml
       try {
-        const { Readable } = await import('stream');
-        const { createInflateRaw } = await import('zlib');
-        // For docx, we'll just extract raw text from the XML
-        const content = req.file.buffer.toString('utf-8');
-        // Simple extraction: look for text between XML tags in the buffer
-        const textParts = content.match(/<w:t[^>]*>([^<]+)<\/w:t>/g);
-        if (textParts) {
-          textContent = textParts.map(t => t.replace(/<[^>]+>/g, '')).join(' ');
+        const AdmZip = (await import('adm-zip')).default;
+        const zip = new AdmZip(req.file.buffer);
+        const docEntry = zip.getEntry('word/document.xml');
+        if (docEntry) {
+          const xml = docEntry.getData().toString('utf-8');
+          // Extract text from <w:t> tags, preserving paragraph breaks
+          const paragraphs: string[] = [];
+          const paraMatches = xml.match(/<w:p[ >][\s\S]*?<\/w:p>/g) || [];
+          for (const para of paraMatches) {
+            const textParts = para.match(/<w:t[^>]*>([^<]*)<\/w:t>/g);
+            if (textParts) {
+              const line = textParts.map(t => t.replace(/<[^>]+>/g, '')).join('');
+              if (line.trim()) paragraphs.push(line);
+            }
+          }
+          textContent = paragraphs.join('\n\n');
+          if (!textContent.trim()) {
+            textContent = '[Empty document — no text found in .docx]';
+          }
         } else {
-          textContent = '[Could not extract text from .docx — try .txt or .md format]';
+          textContent = '[Could not find document content in .docx — file may be corrupted]';
         }
-      } catch {
-        textContent = '[Failed to parse .docx file — try .txt or .md format]';
+      } catch (e) {
+        textContent = '[Failed to parse .docx file: ' + String(e) + ']';
       }
     }
 
@@ -1355,27 +1366,24 @@ ${sourceCode.substring(0, 15000)}
   });
 
   // ═══════════════════════════════════════════════════════════
-  // TTS / Audio (Piper text-to-speech)
+  // TTS / Audio (Microsoft Edge TTS — free neural voices)
   // ═══════════════════════════════════════════════════════════
 
   // Generate audio from text
   app.post('/api/audio/generate', async (req: Request, res: Response) => {
-    const { text, voice, format } = req.body;
+    const { text, voice, rate, pitch, volume } = req.body;
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ error: 'Text required' });
     }
-    if (text.length > 10000) {
-      return res.status(400).json({ error: 'Text too long (max 10,000 chars)' });
+    if (text.length > 50000) {
+      return res.status(400).json({ error: 'Text too long (max 50,000 chars)' });
     }
 
-    if (!services.tts?.isAvailable()) {
-      return res.status(503).json({
-        error: 'TTS not available. Install Piper TTS: pip3 install piper-tts',
-        install: 'pip3 install piper-tts',
-      });
+    if (!services.tts) {
+      return res.status(503).json({ error: 'TTS service not initialized' });
     }
 
-    const result = await services.tts.generate(text, { voice, format: format || 'wav' });
+    const result = await services.tts.generate(text, { voice, rate, pitch, volume });
     if (result.success) {
       res.json(result);
     } else {
@@ -1400,40 +1408,44 @@ ${sourceCode.substring(0, 15000)}
     }
 
     const ext = fname.split('.').pop()?.toLowerCase();
-    const contentType = ext === 'ogg' ? 'audio/ogg' : 'audio/wav';
-    res.setHeader('Content-Type', contentType);
+    const mimeTypes: Record<string, string> = {
+      mp3: 'audio/mpeg',
+      ogg: 'audio/ogg',
+      wav: 'audio/wav',
+    };
+    res.setHeader('Content-Type', mimeTypes[ext || ''] || 'audio/mpeg');
+    res.setHeader('Content-Disposition', `inline; filename="${fname}"`);
     const { createReadStream } = await import('fs');
     createReadStream(filePath).pipe(res);
   });
 
-  // List available voices + known voices catalog
+  // List available voice presets
   app.get('/api/audio/voices', async (_req: Request, res: Response) => {
     const { TTSService } = await import('../services/tts.js');
-    const installed = services.tts?.isAvailable() ? await services.tts.listVoices() : [];
-    const activeVoice = services.tts?.getActiveVoice() || 'en_US-lessac-medium';
+    const activeVoice = services.tts?.getActiveVoice() || 'en-US-AriaNeural';
     res.json({
-      available: services.tts?.isAvailable() || false,
+      available: true,
       activeVoice,
-      installed,
-      knownVoices: TTSService.KNOWN_VOICES,
-      install: services.tts?.isAvailable() ? undefined : 'pip3 install piper-tts',
+      presets: TTSService.VOICE_PRESETS,
     });
   });
 
   // Get/set the active voice
   app.get('/api/audio/voice', async (_req: Request, res: Response) => {
-    res.json({ voice: services.tts?.getActiveVoice() || 'en_US-lessac-medium' });
+    res.json({ voice: services.tts?.getActiveVoice() || 'en-US-AriaNeural' });
   });
 
   app.post('/api/audio/voice', async (req: Request, res: Response) => {
     const { voice } = req.body;
     if (!voice || typeof voice !== 'string') {
-      return res.status(400).json({ error: 'voice is required (e.g., "en_US-lessac-medium")' });
+      return res.status(400).json({ error: 'voice is required (e.g., "narrator_female" or "en-US-AriaNeural")' });
     }
     if (!services.tts) {
       return res.status(503).json({ error: 'TTS service not initialized' });
     }
-    await services.tts.setVoice(voice);
-    res.json({ success: true, voice, message: `Voice set to ${voice}. This persists across restarts.` });
+    // Resolve preset name to voice ID before saving
+    const resolvedVoice = services.tts.resolveVoice(voice);
+    await services.tts.setVoice(resolvedVoice);
+    res.json({ success: true, voice: resolvedVoice, message: `Voice set to ${resolvedVoice}. This persists across restarts.` });
   });
 }

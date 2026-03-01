@@ -1,19 +1,16 @@
 /**
  * AuthorClaw TTS Service
- * Text-to-speech using Piper TTS (local, free, MIT-licensed)
+ * Text-to-speech using Microsoft Edge TTS (free, no API key, neural voices)
  *
- * Generates audio files from text. Supports WAV output and OGG conversion
- * for Telegram voice messages. Gracefully degrades if Piper is not installed.
+ * Uses the node-edge-tts package to access Microsoft's Edge Read Aloud engine.
+ * 300+ voices, 90+ languages, high-quality neural synthesis.
+ * Outputs MP3 directly — no ffmpeg or binary installation needed.
  */
 
-import { exec } from 'child_process';
-import { mkdir, readdir, stat, readFile, unlink, access, constants } from 'fs/promises';
+import { mkdir, readdir, stat, readFile, unlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { promisify } from 'util';
 import { randomBytes } from 'crypto';
-
-const execAsync = promisify(exec);
 
 export interface TTSResult {
   success: boolean;
@@ -21,51 +18,83 @@ export interface TTSResult {
   filename?: string;
   format?: string;
   size?: number;
+  duration?: number; // estimated seconds
   error?: string;
 }
 
 export interface TTSVoice {
-  name: string;
-  language: string;
-  quality: string;
+  id: string;        // e.g. 'en-US-AriaNeural'
+  name: string;      // e.g. 'Aria'
+  language: string;   // e.g. 'en-US'
+  gender: string;     // 'Female' or 'Male'
+  description: string; // Author-friendly description
+}
+
+export interface VoicePreset {
+  id: string;
+  voice: string;
+  description: string;
+  gender: string;
 }
 
 export class TTSService {
   private audioDir: string;
   private configDir: string;
-  private piperAvailable: boolean | null = null;
-  private piperPath: string = 'piper'; // Resolved full path to piper binary
-  private ffmpegAvailable: boolean | null = null;
-  private ffmpegPath: string = 'ffmpeg'; // Resolved full path to ffmpeg binary
-  private defaultVoice = 'en_US-lessac-medium';
+  private defaultVoice = 'en-US-AriaNeural';
+  private defaultPreset = 'narrator_female';
   private configuredVoice: string | null = null;
 
-  // Known good Piper voices with human-readable descriptions
-  static readonly KNOWN_VOICES: Record<string, string> = {
-    'en_US-lessac-medium': 'Lessac (US, clear & natural — recommended)',
-    'en_US-lessac-high': 'Lessac High (US, best quality, slower)',
-    'en_US-libritts-high': 'LibriTTS (US, expressive, great for fiction)',
-    'en_US-amy-medium': 'Amy (US, warm female voice)',
-    'en_US-arctic-medium': 'Arctic (US, neutral)',
-    'en_US-ryan-medium': 'Ryan (US, male)',
-    'en_GB-alba-medium': 'Alba (British, clear)',
-    'en_GB-jenny_dioco-medium': 'Jenny (British, warm)',
+  // Author-focused voice presets (from AuthorScribe Audio)
+  static readonly VOICE_PRESETS: Record<string, VoicePreset> = {
+    narrator_female: {
+      id: 'narrator_female',
+      voice: 'en-US-AriaNeural',
+      description: 'Versatile female — clear, expressive, works for most genres',
+      gender: 'Female',
+    },
+    narrator_male: {
+      id: 'narrator_male',
+      voice: 'en-US-GuyNeural',
+      description: 'Warm male — great for literary fiction, thriller narration',
+      gender: 'Male',
+    },
+    narrator_deep: {
+      id: 'narrator_deep',
+      voice: 'en-US-ChristopherNeural',
+      description: 'Deep, authoritative male — epic fantasy, sci-fi, nonfiction',
+      gender: 'Male',
+    },
+    narrator_warm: {
+      id: 'narrator_warm',
+      voice: 'en-US-JennyNeural',
+      description: 'Warm, approachable female — romance, memoir',
+      gender: 'Female',
+    },
+    british_male: {
+      id: 'british_male',
+      voice: 'en-GB-RyanNeural',
+      description: 'British male — literary fiction, period pieces, cozy mysteries',
+      gender: 'Male',
+    },
+    british_female: {
+      id: 'british_female',
+      voice: 'en-GB-SoniaNeural',
+      description: 'British female — elegant, clear, literary',
+      gender: 'Female',
+    },
+    storyteller: {
+      id: 'storyteller',
+      voice: 'en-US-AndrewNeural',
+      description: 'Engaging male storyteller — adventure, YA, middle grade',
+      gender: 'Male',
+    },
+    dramatic: {
+      id: 'dramatic',
+      voice: 'en-US-RogerNeural',
+      description: 'Dramatic male — action, thriller, horror',
+      gender: 'Male',
+    },
   };
-
-  // Common installation paths for Piper TTS (pip, pipx, system, snap, etc.)
-  private static readonly PIPER_SEARCH_PATHS: string[] = [
-    'piper', // Already on PATH
-    '/usr/local/bin/piper',
-    '/usr/bin/piper',
-    // pipx installs (the #1 miss — Ubuntu 24.04 forces pipx over pip)
-    `${process.env.HOME || '/root'}/.local/bin/piper`,
-    `${process.env.HOME || '/root'}/.local/share/pipx/venvs/piper-tts/bin/piper`,
-    // pip user installs
-    `${process.env.HOME || '/root'}/.local/lib/python3.12/site-packages/piper/__main__.py`,
-    `${process.env.HOME || '/root'}/.local/lib/python3.11/site-packages/piper/__main__.py`,
-    // snap / flatpak
-    '/snap/bin/piper',
-  ];
 
   constructor(workspaceDir: string) {
     this.audioDir = join(workspaceDir, 'audio');
@@ -73,76 +102,13 @@ export class TTSService {
   }
 
   async initialize(): Promise<void> {
-    // Create audio output directory
     await mkdir(this.audioDir, { recursive: true });
     await mkdir(this.configDir, { recursive: true });
-
-    // Load persisted voice preference
     await this.loadVoiceConfig();
-
-    // Find Piper TTS — search common installation paths
-    this.piperPath = await this.findBinary(TTSService.PIPER_SEARCH_PATHS, '--help');
-    this.piperAvailable = this.piperPath !== '';
-
-    // Find ffmpeg — search common paths
-    this.ffmpegPath = await this.findBinary(['ffmpeg', '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg'], '-version');
-    this.ffmpegAvailable = this.ffmpegPath !== '';
-
-    // TTS status logged at debug level only (hidden from startup banner)
-    // Piper is optional — no warnings if not installed
   }
 
-  /**
-   * Search a list of candidate paths for a binary.
-   * Returns the first working path, or '' if none found.
-   *
-   * Strategy for absolute paths: check exists + executable permission.
-   * Many CLI tools (like piper-tts) exit non-zero on --help, so we
-   * don't require the test command to succeed for known file paths.
-   */
-  private async findBinary(candidates: string[], testArg: string): Promise<string> {
-    for (const candidate of candidates) {
-      // Skip __main__.py style paths — need python invocation
-      if (candidate.endsWith('.py')) {
-        try {
-          await access(candidate, constants.X_OK);
-          return `python3 "${candidate}"`;
-        } catch { continue; }
-      }
+  // ── Voice Config Persistence ──
 
-      const isAbsolute = candidate.startsWith('/') || candidate.startsWith(process.env.HOME || '/nope');
-
-      if (isAbsolute) {
-        // For absolute paths: just verify the file exists and is executable
-        // Don't require --help to succeed (piper-tts exits non-zero on --help)
-        try {
-          await access(candidate, constants.X_OK);
-          return candidate;
-        } catch { continue; }
-      } else {
-        // For bare command names (e.g. "piper", "ffmpeg"): try running it
-        try {
-          await execAsync(`${candidate} ${testArg}`, { timeout: 10000 });
-          return candidate;
-        } catch { continue; }
-      }
-    }
-
-    // Last resort: try `which` / `command -v` (catches anything on extended PATH)
-    try {
-      const { stdout } = await execAsync(`which ${candidates[0]} 2>/dev/null || command -v ${candidates[0]} 2>/dev/null`, { timeout: 5000 });
-      const found = stdout.trim();
-      if (found) {
-        try {
-          await access(found, constants.X_OK);
-          return found;
-        } catch { /* found but not executable */ }
-      }
-    } catch { /* which/command not available */ }
-    return '';
-  }
-
-  /** Load persisted voice config from workspace/.config/tts.json */
   private async loadVoiceConfig(): Promise<void> {
     const configPath = join(this.configDir, 'tts.json');
     try {
@@ -154,93 +120,104 @@ export class TTSService {
     } catch { /* no config yet — use default */ }
   }
 
-  /** Persist voice preference to workspace/.config/tts.json */
   async setVoice(voice: string): Promise<void> {
     this.configuredVoice = voice;
     const configPath = join(this.configDir, 'tts.json');
-    const { writeFile } = await import('fs/promises');
     await writeFile(configPath, JSON.stringify({ voice }, null, 2));
   }
 
-  /** Get the currently active voice (configured or default) */
   getActiveVoice(): string {
     return this.configuredVoice || this.defaultVoice;
   }
 
+  /** Edge TTS is always available (only needs internet) */
   isAvailable(): boolean {
-    return this.piperAvailable === true;
+    return true;
   }
 
+  // ── Voice Resolution ──
+
   /**
-   * Generate audio from text using Piper TTS.
-   * Returns the file path of the generated audio.
+   * Resolve a voice input to a Microsoft voice ID.
+   * Accepts: preset name ('narrator_deep'), voice ID ('en-US-DavisNeural'), or null (use default).
+   */
+  resolveVoice(input?: string): string {
+    if (!input) return this.getActiveVoice();
+    // Check if it's a preset name
+    const preset = TTSService.VOICE_PRESETS[input.toLowerCase()];
+    if (preset) return preset.voice;
+    // Otherwise treat as a raw voice ID
+    return input;
+  }
+
+  // ── Audio Generation ──
+
+  /**
+   * Generate audio from text using Microsoft Edge TTS.
+   * Returns the file path of the generated MP3.
    */
   async generate(text: string, options: {
     voice?: string;
-    format?: 'wav' | 'ogg';
+    rate?: string;   // e.g. '+10%', '-20%', '+0%'
+    pitch?: string;  // e.g. '+5Hz', '-10Hz', '+0Hz'
+    volume?: string; // e.g. '+0%', '-50%'
   } = {}): Promise<TTSResult> {
-    if (!this.piperAvailable) {
-      return {
-        success: false,
-        error: 'TTS not available. Install Piper TTS: pipx install piper-tts (or pip3 install piper-tts)',
-      };
-    }
+    // Lazy import to avoid issues if package isn't installed
+    const { EdgeTTS } = await import('node-edge-tts');
 
-    const voice = options.voice || this.configuredVoice || this.defaultVoice;
-    const format = options.format || 'wav';
+    const voice = this.resolveVoice(options.voice);
     const id = randomBytes(6).toString('hex');
-    const wavFile = join(this.audioDir, `tts-${id}.wav`);
-    const outputFile = format === 'ogg'
-      ? join(this.audioDir, `tts-${id}.ogg`)
-      : wavFile;
+    const filename = `tts-${id}.mp3`;
+    const outputFile = join(this.audioDir, filename);
 
     try {
-      // Sanitize text for shell (escape single quotes, limit length)
-      const sanitized = text
-        .replace(/'/g, "'\\''")
-        .substring(0, 5000); // Limit to ~5000 chars (~5 min audio)
+      // Limit text length (Edge TTS handles long text well but let's be sensible)
+      const trimmedText = text.substring(0, 50000);
 
-      // Generate WAV with Piper (using resolved full path)
-      // --data-dir and --download-dir let piper auto-download voice models
-      const voiceDir = join(process.env.HOME || '/tmp', '.local', 'share', 'piper-voices');
-      const piperCmd = `echo '${sanitized}' | "${this.piperPath}" --model ${voice} --data-dir "${voiceDir}" --download-dir "${voiceDir}" --output_file "${wavFile}"`;
-      await execAsync(piperCmd, { timeout: 120000 }); // 2 min timeout
+      const tts = new EdgeTTS({
+        voice,
+        lang: voice.split('-').slice(0, 2).join('-'), // e.g. 'en-US' from 'en-US-AriaNeural'
+        outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
+        ...(options.rate && { rate: options.rate }),
+        ...(options.pitch && { pitch: options.pitch }),
+        ...(options.volume && { volume: options.volume }),
+      });
 
-      // Convert to OGG if requested (for Telegram voice messages)
-      if (format === 'ogg' && this.ffmpegAvailable) {
-        const ffmpegCmd = `"${this.ffmpegPath}" -y -i "${wavFile}" -c:a libopus -b:a 64k "${outputFile}"`;
-        await execAsync(ffmpegCmd, { timeout: 60000 });
-        // Clean up WAV
-        try { await unlink(wavFile); } catch { /* ok */ }
-      } else if (format === 'ogg' && !this.ffmpegAvailable) {
-        // Fall back to WAV if ffmpeg not available
-        return {
-          success: true,
-          file: wavFile,
-          filename: `tts-${id}.wav`,
-          format: 'wav',
-          size: (await stat(wavFile)).size,
-        };
-      }
+      await tts.ttsPromise(trimmedText, outputFile);
 
       const fileStats = await stat(outputFile);
+
+      // Estimate duration: ~150 words/minute, average word ~5 chars
+      const wordCount = trimmedText.split(/\s+/).length;
+      const estimatedDuration = Math.round((wordCount / 150) * 60);
+
       return {
         success: true,
         file: outputFile,
-        filename: `tts-${id}.${format}`,
-        format,
+        filename,
+        format: 'mp3',
         size: fileStats.size,
+        duration: estimatedDuration,
       };
     } catch (error) {
       return {
         success: false,
-        error: `TTS generation failed: ${String(error)}`,
+        error: `TTS generation failed: ${String(error)}. Make sure you have internet access.`,
       };
     }
   }
 
+  // ── Voice Catalog ──
+
   /**
-   * Get the raw audio file buffer for sending via Telegram.
+   * List available voice presets (author-friendly).
+   */
+  listPresets(): VoicePreset[] {
+    return Object.values(TTSService.VOICE_PRESETS);
+  }
+
+  /**
+   * Get the raw audio file buffer (for Telegram voice messages, etc.)
    */
   async getAudioBuffer(filePath: string): Promise<Buffer | null> {
     try {
@@ -250,51 +227,7 @@ export class TTSService {
     }
   }
 
-  /**
-   * List installed Piper voice models.
-   */
-  async listVoices(): Promise<TTSVoice[]> {
-    if (!this.piperAvailable) return [];
-
-    // Check common voice model locations
-    const voiceDirs = [
-      join(process.env.HOME || '', '.local', 'share', 'piper-voices'),
-      '/usr/share/piper-voices',
-      join(this.audioDir, '..', 'piper-voices'),
-    ];
-
-    const voices: TTSVoice[] = [];
-
-    for (const dir of voiceDirs) {
-      if (!existsSync(dir)) continue;
-      try {
-        const entries = await readdir(dir);
-        for (const entry of entries) {
-          const name = String(entry);
-          if (name.endsWith('.onnx')) {
-            const voiceName = name.replace('.onnx', '').replace(/\//g, '-');
-            const parts = voiceName.split('-');
-            voices.push({
-              name: voiceName,
-              language: parts.slice(0, 2).join('-'),
-              quality: parts[parts.length - 1] || 'medium',
-            });
-          }
-        }
-      } catch { /* dir not readable */ }
-    }
-
-    // Always include default voice (Piper can auto-download)
-    if (voices.length === 0) {
-      voices.push({
-        name: this.defaultVoice,
-        language: 'en_US',
-        quality: 'medium',
-      });
-    }
-
-    return voices;
-  }
+  // ── Cleanup ──
 
   /**
    * Clean up old audio files (older than 24 hours).
@@ -306,8 +239,8 @@ export class TTSService {
     try {
       const files = await readdir(this.audioDir);
       for (const file of files) {
-        if (!file.startsWith('tts-')) continue;
-        const filePath = join(this.audioDir, file);
+        if (!String(file).startsWith('tts-')) continue;
+        const filePath = join(this.audioDir, String(file));
         try {
           const stats = await stat(filePath);
           if (stats.mtimeMs < cutoff) {
