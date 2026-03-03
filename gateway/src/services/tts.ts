@@ -88,11 +88,17 @@ export class TTSService {
       description: 'Engaging male storyteller — adventure, YA, middle grade',
       gender: 'Male',
     },
-    dramatic: {
-      id: 'dramatic',
-      voice: 'en-US-RogerNeural',
-      description: 'Dramatic male — action, thriller, horror',
+    snarky_nerd: {
+      id: 'snarky_nerd',
+      voice: 'en-US-DavisNeural',
+      description: 'Snarky, nerdy male — witty banter, smart humor, sci-fi',
       gender: 'Male',
+    },
+    curious_kid: {
+      id: 'curious_kid',
+      voice: 'en-US-AnaNeural',
+      description: 'Curious child — full of wonder, MG, picture books, whimsical',
+      gender: 'Female',
     },
   };
 
