@@ -819,9 +819,9 @@ textarea { resize: vertical; min-height: 60px; }
       </div>
 
       <div class="card">
-        <div class="card-title">Compiled Manuscripts</div>
+        <div class="card-title">Compiled Outputs</div>
         <div id="compiledOutputs">
-          <div style="color:var(--muted);text-align:center;padding:20px;">No compiled manuscripts yet.</div>
+          <div style="color:var(--muted);text-align:center;padding:20px;">No compiled outputs yet.</div>
         </div>
       </div>
     </div>
@@ -1685,7 +1685,7 @@ function openProjectDetail(id) {
   if (project.status === 'paused') {
     actionsHtml += '<button class="success" id="pdResume">Resume</button> ';
   }
-  actionsHtml += '<button id="pdCompile">Compile Manuscript</button> ';
+  actionsHtml += '<button id="pdCompile">Compile Files</button> ';
 
   // "Continue to..." button for completed projects
   if (project.status === 'completed') {
@@ -1852,10 +1852,10 @@ function loadProjectFiles(id) {
 }
 
 function compileProject(id) {
-  showToast('Compiling manuscript...', 'info');
+  showToast('Compiling project files...', 'info');
   api('POST', '/api/projects/' + id + '/compile').then(function(data) {
     if (data.success) {
-      showToast('Manuscript compiled! ' + (data.chapters || 0) + ' chapters, ~' + ((data.totalWords || 0).toLocaleString()) + ' words.', 'success');
+      showToast('Compiled! ' + (data.sections || 0) + ' sections, ~' + ((data.totalWords || 0).toLocaleString()) + ' words. Files: ' + (data.files || []).join(', '), 'success');
       loadProjectFiles(id);
     } else {
       showToast(data.error || 'Compile failed', 'error');
@@ -2088,7 +2088,7 @@ function loadCompiledOutputs() {
   var completed = allProjects.filter(function(p) { return p.status === 'completed'; });
   var el = document.getElementById('compiledOutputs');
   if (completed.length === 0) {
-    el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;">No compiled manuscripts yet. Complete a project to generate one.</div>';
+    el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;">No compiled outputs yet. Complete a project to generate one.</div>';
     return;
   }
 

@@ -1523,7 +1523,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     }
   });
 
-  // ── Compile Manuscript (combine all chapter files into one) ──
+  // ── Compile Project Files (combine all output files into one document) ──
 
   app.post('/api/projects/:id/compile', async (req: Request, res: Response) => {
     const engine = gateway.getProjectEngine?.();
@@ -1542,67 +1542,103 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
 
     try {
       const entries = await rd(projectDir);
+      const sectionContents: string[] = [];
+      const isChapterProject = project.type === 'book-production' || project.type === 'novel-pipeline';
 
-      // Find all chapter step files (writing phase steps)
-      const writingSteps = project.steps
-        .filter((s: any) => s.phase === 'writing' && s.status === 'completed')
-        .sort((a: any, b: any) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
+      if (isChapterProject) {
+        // ── Chapter-based compile (book-production / novel-pipeline) ──
+        const writingSteps = project.steps
+          .filter((s: any) => s.phase === 'writing' && s.status === 'completed')
+          .sort((a: any, b: any) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
 
-      const chapterContents: string[] = [];
-      for (const ws of writingSteps) {
-        const expectedFile = `${(ws as any).id}-${(ws as any).label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-        const fullPath = j(projectDir, expectedFile);
-        if (ex(fullPath)) {
-          const raw = await rf(fullPath, 'utf-8');
-          // Strip the step header (# Step Title) if present
-          const content = raw.replace(/^# .+\n\n/, '');
-          chapterContents.push(`## Chapter ${(ws as any).chapterNumber || chapterContents.length + 1}\n\n${content}`);
+        for (const ws of writingSteps) {
+          const expectedFile = `${(ws as any).id}-${(ws as any).label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+          const fullPath = j(projectDir, expectedFile);
+          if (ex(fullPath)) {
+            const raw = await rf(fullPath, 'utf-8');
+            const content = raw.replace(/^# .+\n\n/, '');
+            sectionContents.push(`## Chapter ${(ws as any).chapterNumber || sectionContents.length + 1}\n\n${content}`);
+          }
+        }
+
+        // Fallback: find chapter files by filename pattern
+        if (sectionContents.length === 0) {
+          const chapterFiles = entries
+            .filter(f => f.match(/write-chapter-\d+\.md$/))
+            .sort((a, b) => {
+              const numA = parseInt(a.match(/chapter-(\d+)/)?.[1] || '0');
+              const numB = parseInt(b.match(/chapter-(\d+)/)?.[1] || '0');
+              return numA - numB;
+            });
+          for (const cf of chapterFiles) {
+            const raw = await rf(j(projectDir, cf), 'utf-8');
+            const content = raw.replace(/^# .+\n\n/, '');
+            const chNum = parseInt(cf.match(/chapter-(\d+)/)?.[1] || '0');
+            sectionContents.push(`## Chapter ${chNum}\n\n${content}`);
+          }
         }
       }
 
-      // Fallback: if no phase-tagged steps, find chapter files by filename pattern
-      if (chapterContents.length === 0) {
-        const chapterFiles = entries
-          .filter(f => f.match(/write-chapter-\d+\.md$/))
-          .sort((a, b) => {
-            const numA = parseInt(a.match(/chapter-(\d+)/)?.[1] || '0');
-            const numB = parseInt(b.match(/chapter-(\d+)/)?.[1] || '0');
-            return numA - numB;
-          });
-        for (const cf of chapterFiles) {
-          const raw = await rf(j(projectDir, cf), 'utf-8');
-          const content = raw.replace(/^# .+\n\n/, '');
-          const chNum = parseInt(cf.match(/chapter-(\d+)/)?.[1] || '0');
-          chapterContents.push(`## Chapter ${chNum}\n\n${content}`);
+      // ── Universal compile: collect ALL step output .md files ──
+      if (sectionContents.length === 0) {
+        // Get completed steps in order to determine file sequence
+        const completedSteps = project.steps
+          .filter((s: any) => s.status === 'completed')
+          .map((s: any) => ({
+            id: s.id,
+            label: s.label,
+            filename: `${s.id}-${s.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`,
+          }));
+
+        // First: collect files that match completed steps (preserves step order)
+        const usedFiles = new Set<string>();
+        for (const cs of completedSteps) {
+          const fullPath = j(projectDir, cs.filename);
+          if (ex(fullPath)) {
+            const raw = await rf(fullPath, 'utf-8');
+            sectionContents.push(raw.startsWith('# ') ? raw : `## ${cs.label}\n\n${raw}`);
+            usedFiles.add(cs.filename);
+          }
+        }
+
+        // Second: pick up any other .md files not already included (research files, extras)
+        const remainingMd = entries
+          .filter(f => f.endsWith('.md') && !usedFiles.has(f) && f !== 'manuscript.md' && f !== 'compiled-output.md')
+          .sort();
+        for (const mf of remainingMd) {
+          const raw = await rf(j(projectDir, mf), 'utf-8');
+          sectionContents.push(raw);
+          usedFiles.add(mf);
         }
       }
 
-      if (chapterContents.length === 0) {
-        return res.status(400).json({ error: 'No chapter files found to compile' });
+      if (sectionContents.length === 0) {
+        return res.status(400).json({ error: 'No output files found to compile' });
       }
 
-      // Build manuscript markdown
-      const manuscriptMd = `# ${project.title}\n\n` + chapterContents.join('\n\n---\n\n');
-      await wf(j(projectDir, 'manuscript.md'), manuscriptMd, 'utf-8');
+      // Build compiled document
+      const compiledMd = `# ${project.title}\n\n` + sectionContents.join('\n\n---\n\n');
+      const outputBaseName = isChapterProject ? 'manuscript' : 'compiled-output';
+      await wf(j(projectDir, `${outputBaseName}.md`), compiledMd, 'utf-8');
 
-      // Get persona info for back matter if available
+      // Get persona info for metadata
       const personaId = (project as any).personaId;
       const persona = personaId ? services.personas?.get(personaId) : null;
       const authorName = persona?.penName || 'AuthorClaw';
 
-      const exportFiles = ['manuscript.md'];
+      const exportFiles = [`${outputBaseName}.md`];
 
-      // Generate DOCX with professional formatting
+      // Generate DOCX
       try {
         const docxBuffer = await generateDocxBuffer({
           title: project.title,
           author: authorName,
-          content: manuscriptMd,
+          content: compiledMd,
           authorBio: persona?.bio,
           alsoBy: persona?.alsoBy,
         });
-        await wf(j(projectDir, 'manuscript.docx'), docxBuffer);
-        exportFiles.push('manuscript.docx');
+        await wf(j(projectDir, `${outputBaseName}.docx`), docxBuffer);
+        exportFiles.push(`${outputBaseName}.docx`);
       } catch { /* DOCX generation is non-fatal */ }
 
       // Generate EPUB
@@ -1610,20 +1646,21 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
         const epubBuffer = await generateEpubBuffer({
           title: project.title,
           author: authorName,
-          content: manuscriptMd,
+          content: compiledMd,
           description: project.description,
           authorBio: persona?.bio,
         });
-        await wf(j(projectDir, 'manuscript.epub'), epubBuffer);
-        exportFiles.push('manuscript.epub');
+        await wf(j(projectDir, `${outputBaseName}.epub`), epubBuffer);
+        exportFiles.push(`${outputBaseName}.epub`);
       } catch { /* EPUB generation is non-fatal */ }
 
-      const totalWords = manuscriptMd.split(/\s+/).length;
+      const totalWords = compiledMd.split(/\s+/).length;
       res.json({
         success: true,
-        chapters: chapterContents.length,
+        sections: sectionContents.length,
         totalWords,
         files: exportFiles,
+        outputName: outputBaseName,
       });
     } catch (err) {
       res.status(500).json({ error: 'Compile failed: ' + String(err) });
