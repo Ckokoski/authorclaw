@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# AuthorClaw Setup Wizard v3.0
+# AuthorClaw Setup Wizard v4.0
 # The Secure AI Writing Agent — By Writing Secrets
 #
 # This wizard handles everything:
@@ -35,7 +35,7 @@ print_header() {
     echo ""
     echo -e "${PURPLE}  ╔═══════════════════════════════════════════╗${NC}"
     echo -e "${PURPLE}  ║                                           ║${NC}"
-    echo -e "${PURPLE}  ║${WHITE}${BOLD}       AuthorClaw Setup Wizard v3.0       ${NC}${PURPLE}║${NC}"
+    echo -e "${PURPLE}  ║${WHITE}${BOLD}       AuthorClaw Setup Wizard v4.0       ${NC}${PURPLE}║${NC}"
     echo -e "${PURPLE}  ║${DIM}       The Secure AI Writing Agent         ${NC}${PURPLE}║${NC}"
     echo -e "${PURPLE}  ║                                           ║${NC}"
     echo -e "${PURPLE}  ╚═══════════════════════════════════════════╝${NC}"
@@ -554,10 +554,12 @@ echo -e "    ${CYAN}cd ~/authorclaw && npx tsx gateway/src/index.ts${NC}"
 echo ""
 echo -e "  ${WHITE}Then open the dashboard:${NC} ${CYAN}http://localhost:3847${NC}"
 echo ""
-echo -e "  ${WHITE}The dashboard has 3 tabs:${NC}"
-echo -e "    ${GREEN}Home${NC}            — Chat, morning briefing, quick research, agent report"
-echo -e "    ${GREEN}Projects${NC}        — Create & track autonomous writing projects (including full novel pipelines)"
-echo -e "    ${GREEN}Settings${NC}        — API keys, models, budget, Telegram, research domains"
+echo -e "  ${WHITE}The dashboard has 5 panels:${NC}"
+echo -e "    ${GREEN}Home${NC}            — Chat with slash commands, writing stats, idle tasks"
+echo -e "    ${GREEN}Projects${NC}        — Create & auto-execute writing projects (7 templates + full novel pipeline)"
+echo -e "    ${GREEN}Personas${NC}        — Manage pen names with distinct genres, voices, and styles"
+echo -e "    ${GREEN}Library${NC}         — Document uploads, manuscripts, DOCX/EPUB downloads"
+echo -e "    ${GREEN}Settings${NC}        — API keys, TTS voices, Telegram, autonomous mode, idle tasks"
 echo ""
 echo -e "  ────────────────────────────────────────"
 echo ""
@@ -583,7 +585,7 @@ Here's what AuthorClaw is:
 - Start command: cd ~/authorclaw && npx tsx gateway/src/index.ts
 - Connects to AI providers: Ollama (local), Google Gemini (free), Anthropic Claude, OpenAI, DeepSeek
 - Runs on port 3847 (localhost only)
-- Has a dashboard at http://localhost:3847 with 3 tabs: Home, Projects, Settings
+- Has a dashboard at http://localhost:3847 with 5 panels: Home, Projects, Personas, Library, Settings
 - Has a project-based autonomy system (planning, research, writing, revision, promotion, analysis)
 - Has a novel pipeline that writes complete books (30+ steps: premise, bible, outline, chapters, revision, DOCX assembly)
 - Has a Telegram bot integration (configurable from dashboard)
@@ -617,10 +619,20 @@ if [[ ! "$yn" =~ ^[Nn]$ ]]; then
     echo -e "  ${WHITE}Starting AuthorClaw...${NC}"
     echo ""
     cd "$(dirname "$0")/.." 2>/dev/null || cd "$(dirname "$0")"
-    npx tsx gateway/src/index.ts
 
-    # After starting, store any API keys via the vault
-    sleep 3
+    # Start server in background so we can store API keys
+    npx tsx gateway/src/index.ts &
+    SERVER_PID=$!
+
+    # Wait for server to become ready
+    echo -e "  ${DIM}Waiting for server to start...${NC}"
+    for i in $(seq 1 30); do
+        if curl -s http://localhost:3847/api/agent/status > /dev/null 2>&1; then
+            ok "Server is running (PID: $SERVER_PID)"
+            break
+        fi
+        sleep 1
+    done
     if [ -n "$GEMINI_KEY" ]; then
         curl -s -X POST http://localhost:3847/api/vault \
           -H 'Content-Type: application/json' \
@@ -645,6 +657,16 @@ if [[ ! "$yn" =~ ^[Nn]$ ]]; then
           -d "{\"key\":\"deepseek_api_key\",\"value\":\"$DEEPSEEK_KEY\"}" > /dev/null 2>&1
         ok "DeepSeek key stored in vault"
     fi
+
+    echo ""
+    echo -e "  ${GREEN}${BOLD}AuthorClaw is running!${NC}"
+    echo -e "  ${WHITE}Dashboard:${NC} ${CYAN}http://localhost:3847${NC}"
+    echo ""
+    echo -e "  ${DIM}Press Ctrl+C to stop the server.${NC}"
+    echo ""
+
+    # Bring server to foreground so user can see output and Ctrl+C to stop
+    wait $SERVER_PID
 else
     echo ""
     echo -e "  ${DIM}When you're ready, just run:${NC}"

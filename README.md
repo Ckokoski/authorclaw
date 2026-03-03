@@ -28,7 +28,7 @@ Tell it what you want. It figures out the steps, picks the right skills, and exe
 - **Market** — Blurbs, ad copy, Amazon descriptions, keywords, social media launch posts
 - **Format** — KDP-ready DOCX (trim sizes, front/back matter) and valid EPUB3 export
 - **Manage** — Track projects, pipelines, word counts across pen names
-- **Listen** — Neural TTS voice engine with 8 author-optimized presets — hear your writing read aloud
+- **Listen** — Neural TTS voice engine with 9 author-optimized presets — hear your writing read aloud
 
 ---
 
@@ -186,11 +186,11 @@ AuthorClaw: 📊 Workspace Usage: 2.1 MB (67 files)
 
 Open `http://localhost:3847` to access the web dashboard — a sidebar-driven interface with 5 panels:
 
-- **Home** — Quick stats (words today, active projects, heartbeat status), active project cards row, full chat interface with slash command support
-- **Projects** — 6 template tiles (Book Planning, Book Bible, Book Production, Deep Revision, Format & Export, Book Launch) + Pipeline mega-tile + Custom. Project list with status filters, inline detail views with step progress, file downloads, and compile controls
-- **Personas** — Author persona card grid with pen names, genres, and style tags. Create manually or generate with AI. Assign personas to projects for voice-consistent writing
+- **Home** — Quick stats (words today, active projects, heartbeat status, personas), active project cards, full chat interface with slash command parity (all Telegram commands work in chat), today's writing progress bar, idle task count
+- **Projects** — 7 template tiles (Book Planning, Book Bible, Book Production, Deep Revision, Format & Export, Book Launch, Full Novel Pipeline) + Custom AI-planned. Projects auto-execute on creation — no manual start needed. Project list with status filters, inline detail views with step progress, file downloads (MD + DOCX), and compile controls
+- **Personas** — Author persona card grid with pen names, genres, style tags, and TTS voice. Create manually or generate with AI. Assign personas to projects for voice-consistent writing. Personas persist across updates with auto-backup
 - **Library** — Document uploads and compiled manuscripts. Download DOCX and EPUB exports
-- **Settings** — API keys (vault-encrypted), Telegram bot config, voice/TTS presets, research domain allowlist, autonomous heartbeat mode
+- **Settings** — API keys (vault-encrypted), Telegram bot config, voice/TTS presets, research domain allowlist, autonomous heartbeat mode with configurable word goal, editable idle task queue (CRUD)
 
 ---
 
@@ -198,7 +198,7 @@ Open `http://localhost:3847` to access the web dashboard — a sidebar-driven in
 
 AuthorClaw includes a built-in neural voice engine powered by Microsoft Edge TTS — no API keys, no binary installation, no cost.
 
-**8 author-optimized voice presets:**
+**9 author-optimized voice presets:**
 
 | Preset | Best For |
 |--------|----------|
@@ -209,7 +209,8 @@ AuthorClaw includes a built-in neural voice engine powered by Microsoft Edge TTS
 | `british_male` | Period pieces, cozy mysteries |
 | `british_female` | Elegant literary fiction |
 | `storyteller` | Adventure, YA |
-| `dramatic` | Action, thriller, horror |
+| `snarky_nerd` | Witty banter, smart humor, sci-fi |
+| `curious_kid` | Full of wonder, MG, picture books, whimsical |
 
 **Telegram voice features:**
 - `/speak Hello world` — Generate and send a voice message
