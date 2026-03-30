@@ -8,6 +8,7 @@
     "requireAuth": true
   },
   "ai": {
+    "preferredProvider": null,
     "maxHistoryMessages": 20,
     "defaultTemperature": 0.7,
     "ollama": {

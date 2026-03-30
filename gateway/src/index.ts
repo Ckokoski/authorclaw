@@ -160,6 +160,12 @@ class AuthorClawGateway {
 
     this.aiRouter = new AIRouter(this.config.get('ai'), this.vault, this.costs);
     await this.aiRouter.initialize();
+    // Load global preferred provider from config
+    const globalPref = this.config.get('ai.preferredProvider');
+    if (globalPref) {
+      this.aiRouter.setGlobalPreferredProvider(globalPref);
+      console.log(`  ✓ Global preferred provider: ${globalPref}`);
+    }
     const providers = this.aiRouter.getActiveProviders();
     for (const p of providers) {
       const tier = p.tier === 'free' ? '🆓 FREE' : p.tier === 'cheap' ? '💰 CHEAP' : '💎 PAID';

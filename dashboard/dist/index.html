@@ -839,6 +839,23 @@ textarea { resize: vertical; min-height: 60px; }
         <div class="key-list" id="keyList"></div>
       </div>
 
+      <!-- Global AI Provider -->
+      <div class="card">
+        <div class="card-title">Default AI Provider</div>
+        <p class="hint" style="margin-bottom:12px;">Force all tasks to use one provider instead of smart tier routing. Per-project settings override this.</p>
+        <div class="form-group">
+          <select id="globalProviderSelect">
+            <option value="">Auto — smart tiered routing (recommended)</option>
+            <option value="ollama">Ollama (local, free)</option>
+            <option value="gemini">Gemini (free tier)</option>
+            <option value="deepseek">DeepSeek (cheap)</option>
+            <option value="claude">Claude (premium)</option>
+            <option value="openai">OpenAI GPT (premium)</option>
+          </select>
+        </div>
+        <button class="success" id="btnSaveGlobalProvider">Save Provider</button>
+      </div>
+
       <!-- Telegram -->
       <div class="card">
         <div class="card-title">Telegram Integration</div>
@@ -1053,6 +1070,7 @@ function switchPanel(name) {
     loadDocuments();
   } else if (name === 'settings') {
     loadKeys();
+    loadGlobalProvider();
     loadResearchDomains();
     loadAutonomousStatus();
     loadTelegramStatus();
@@ -1730,7 +1748,14 @@ function openProjectDetail(id) {
           '<div style="display:flex;gap:6px;">' +
             '<span class="badge badge-type">' + esc(project.type || 'general') + '</span>' +
             (personaName ? '<span class="badge badge-persona">' + esc(personaName) + '</span>' : '') +
-            (project.preferredProvider ? '<span class="badge" style="background:var(--accent);color:#fff;">' + esc(project.preferredProvider) + '</span>' : '') +
+            '<select id="pdProviderSelect" style="font-size:11px;padding:2px 6px;border-radius:6px;background:var(--surface);color:var(--text);border:1px solid var(--border);cursor:pointer;">' +
+              '<option value=""' + (!project.preferredProvider ? ' selected' : '') + '>Auto</option>' +
+              '<option value="ollama"' + (project.preferredProvider === 'ollama' ? ' selected' : '') + '>Ollama</option>' +
+              '<option value="gemini"' + (project.preferredProvider === 'gemini' ? ' selected' : '') + '>Gemini</option>' +
+              '<option value="deepseek"' + (project.preferredProvider === 'deepseek' ? ' selected' : '') + '>DeepSeek</option>' +
+              '<option value="claude"' + (project.preferredProvider === 'claude' ? ' selected' : '') + '>Claude</option>' +
+              '<option value="openai"' + (project.preferredProvider === 'openai' ? ' selected' : '') + '>OpenAI</option>' +
+            '</select>' +
             '<span class="badge badge-status badge-' + esc(project.status) + '">' + esc(project.status) + '</span>' +
           '</div>' +
         '</div>' +
@@ -1761,6 +1786,16 @@ function openProjectDetail(id) {
   if (pdResume) pdResume.addEventListener('click', function() { projectAction('resume', id); });
   var pdDelete = detail.querySelector('#pdDelete');
   if (pdDelete) pdDelete.addEventListener('click', function() { deleteProject(id); });
+  // Wire provider change
+  var pdProviderSelect = detail.querySelector('#pdProviderSelect');
+  if (pdProviderSelect) {
+    pdProviderSelect.addEventListener('change', function() {
+      var newProvider = pdProviderSelect.value;
+      api('POST', '/api/projects/' + id + '/provider', { provider: newProvider }).then(function() {
+        showToast(newProvider ? 'Provider set to ' + newProvider : 'Provider set to Auto', 'success');
+      }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+    });
+  }
   var pdCompile = detail.querySelector('#pdCompile');
   if (pdCompile) pdCompile.addEventListener('click', function() { compileProject(id); });
 
@@ -2234,6 +2269,20 @@ function loadKeys() {
     document.getElementById('keyList').innerHTML = '<span style="color:var(--danger);">Could not load keys</span>';
   });
 }
+
+// ── Global Provider Preference ──
+function loadGlobalProvider() {
+  api('GET', '/api/config').then(function(data) {
+    var sel = document.getElementById('globalProviderSelect');
+    if (sel && data.ai) sel.value = data.ai.preferredProvider || '';
+  });
+}
+document.getElementById('btnSaveGlobalProvider').addEventListener('click', function() {
+  var val = document.getElementById('globalProviderSelect').value;
+  api('POST', '/api/config/update', { path: 'ai.preferredProvider', value: val || null }).then(function() {
+    showToast(val ? 'Default provider set to ' + val : 'Provider set to auto (tiered routing)', 'success');
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
 
 // ── Telegram ──
 function loadTelegramStatus() {

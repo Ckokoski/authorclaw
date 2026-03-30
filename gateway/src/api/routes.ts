@@ -349,7 +349,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       'heartbeat.enableReminders', 'heartbeat.quietHoursStart',
       'heartbeat.quietHoursEnd', 'heartbeat.autonomousEnabled',
       'heartbeat.autonomousIntervalMinutes', 'heartbeat.maxAutonomousStepsPerWake',
-      'ai.defaultTemperature',
+      'ai.defaultTemperature', 'ai.preferredProvider',
       'ai.ollama.enabled', 'ai.ollama.endpoint', 'ai.ollama.model',
       'bridges.telegram.enabled', 'bridges.telegram.pairingEnabled',
     ];
@@ -357,6 +357,10 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       return res.status(403).json({ error: 'Config path not allowed' });
     }
     services.config.set(path, value);
+    // Sync global provider preference to router
+    if (path === 'ai.preferredProvider') {
+      services.aiRouter.setGlobalPreferredProvider(value || null);
+    }
     res.json({ success: true, path, value });
   });
 
@@ -961,6 +965,20 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       activeStep: project.steps.find((s: any) => s.status === 'active')?.label || null,
       remainingSteps: remaining.length,
     });
+  });
+
+  // ── Update a project's preferred provider ──
+  app.post('/api/projects/:id/provider', (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) return res.status(503).json({ error: 'Project engine not initialized' });
+    const project = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const { provider } = req.body;
+    const valid = ['gemini', 'deepseek', 'claude', 'openai', 'ollama', '', null];
+    if (!valid.includes(provider)) return res.status(400).json({ error: 'Invalid provider' });
+    (project as any).preferredProvider = provider || undefined;
+    project.updatedAt = new Date().toISOString();
+    res.json({ success: true, preferredProvider: (project as any).preferredProvider || null });
   });
 
   app.delete('/api/projects/:id', async (req: Request, res: Response) => {

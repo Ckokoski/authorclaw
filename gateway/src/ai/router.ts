@@ -74,6 +74,7 @@ export class AIRouter {
   private config: any;
   private vault: Vault;
   private costs: CostTracker;
+  private globalPreferredProvider: string | null = null;
 
   // ── Prompt Cache ──
   // Caches system prompt hashes so repeated calls with the same soul/style
@@ -200,18 +201,38 @@ export class AIRouter {
   }
 
   /**
+   * Set or clear the global preferred provider.
+   * When set, this provider is tried first for ALL tasks before tier routing.
+   */
+  setGlobalPreferredProvider(providerId: string | null): void {
+    this.globalPreferredProvider = providerId;
+  }
+
+  getGlobalPreferredProvider(): string | null {
+    return this.globalPreferredProvider;
+  }
+
+  /**
    * Select the best provider for a given task type using tiered routing.
-   * If preferredId is set (per-project override), use that provider directly.
+   * Priority: per-project override → global preference → tier routing.
+   * When a preferred provider is set, it is ALWAYS used if available,
+   * regardless of task tier.
    */
   selectProvider(taskType: string, preferredId?: string): AIProvider {
-    // Per-project provider override — use it if available
-    if (preferredId) {
-      const pref = this.providers.get(preferredId);
+    // Resolve effective preference: per-project > global
+    const effectivePref = preferredId || this.globalPreferredProvider;
+
+    if (effectivePref) {
+      const pref = this.providers.get(effectivePref);
       if (pref?.available) {
         return pref;
       }
-      // Preferred provider not available — fall through to tier routing
-      console.warn(`[router] Preferred provider '${preferredId}' not available, falling back to tier routing`);
+      // For Ollama, re-check availability in case it came online after startup
+      if (effectivePref === 'ollama' && !pref) {
+        console.warn(`[router] Ollama preferred but not in provider list — will be checked on next reinitialize`);
+      } else {
+        console.warn(`[router] Preferred provider '${effectivePref}' not available, falling back to tier routing`);
+      }
     }
 
     const tier = TASK_TIERS[taskType] || TASK_TIERS.general;
