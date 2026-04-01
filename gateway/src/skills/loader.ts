@@ -81,13 +81,13 @@ export class SkillLoader {
       const trimmed = line.trim();
 
       // Track which YAML key we're under
-      if (line.match(/^\w/)) {
-        if (line.startsWith('description:')) {
-          description = line.replace('description:', '').trim();
+      if (trimmed.match(/^\w/)) {
+        if (trimmed.startsWith('description:')) {
+          description = trimmed.replace('description:', '').trim();
           currentSection = 'description';
-        } else if (line.startsWith('triggers:')) {
+        } else if (trimmed.startsWith('triggers:')) {
           currentSection = 'triggers';
-        } else if (line.startsWith('permissions:')) {
+        } else if (trimmed.startsWith('permissions:')) {
           currentSection = 'permissions';
         } else {
           currentSection = '';

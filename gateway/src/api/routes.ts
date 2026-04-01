@@ -41,25 +41,6 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     });
   });
 
-  // ── Liveness Probe (Kubernetes /healthz) ──
-  app.get('/healthz', (_req: Request, res: Response) => {
-    res.json({ status: 'alive' });
-  });
-
-  // ── Readiness Probe (Kubernetes /readyz) ──
-  app.get('/readyz', (_req: Request, res: Response) => {
-    try {
-      const providers = services.aiRouter.getActiveProviders();
-      if (providers.length > 0) {
-        res.json({ status: 'ready', providers: providers.length });
-      } else {
-        res.status(503).json({ status: 'not_ready', reason: 'no active AI providers' });
-      }
-    } catch (err: any) {
-      res.status(503).json({ status: 'not_ready', reason: err.message || 'provider check failed' });
-    }
-  });
-
   // ── Liveness Probe (Kubernetes / Docker HEALTHCHECK) ──
   app.get('/healthz', (_req: Request, res: Response) => {
     res.json({ status: 'alive' });
@@ -895,6 +876,42 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
         // Track words for Morning Briefing
         services.heartbeat.addWords(wordCount);
         results.push({ step: activeStep.label, success: true, wordCount });
+
+        // ── ContextEngine: summarize + extract entities for writing/bible steps ──
+        try {
+          const contextEngine = services.contextEngine;
+          const stepLabel = (activeStep as any).label || '';
+          const isWritingStep = stepLabel.toLowerCase().includes('chapter') ||
+            stepLabel.toLowerCase().includes('write') ||
+            (activeStep as any).phase === 'writing';
+          const isBibleStep = currentProject.type === 'book-bible' ||
+            stepLabel.toLowerCase().includes('bible') ||
+            stepLabel.toLowerCase().includes('character') ||
+            stepLabel.toLowerCase().includes('world');
+
+          if (contextEngine && response.length > 200 && (isWritingStep || isBibleStep)) {
+            const chapterNum = currentProject.steps.filter((s: any) =>
+              s.status === 'completed' && s.id !== activeStep.id
+            ).length + 1;
+
+            const aiCompleteFn = (req: any) => services.aiRouter.complete(req);
+            const aiSelectFn = (taskType: string) => services.aiRouter.selectProvider(taskType);
+
+            // Await context engine calls so they complete before moving to next step
+            await Promise.allSettled([
+              contextEngine.generateSummary(
+                currentProject.id, activeStep.id, stepLabel, chapterNum, response,
+                aiCompleteFn, aiSelectFn
+              ).catch((err: any) => console.error('[context-engine] Summary error:', err.message)),
+              contextEngine.extractEntities(
+                currentProject.id, activeStep.id, response,
+                aiCompleteFn, aiSelectFn
+              ).catch((err: any) => console.error('[context-engine] Entity extraction error:', err.message)),
+            ]);
+          }
+        } catch (contextErr) {
+          console.error('[context-engine] Hook error:', contextErr);
+        }
 
         // ── Manuscript Assembly: combine chapter files after assembly step ──
         if ((activeStep as any).phase === 'assembly' && currentProject.type === 'novel-pipeline') {

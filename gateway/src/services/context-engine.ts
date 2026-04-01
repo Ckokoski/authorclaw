@@ -176,8 +176,19 @@ export class ContextEngine {
     const end = cleaned.lastIndexOf('}');
     if (start >= 0 && end > start) {
       cleaned = cleaned.substring(start, end + 1);
+    } else {
+      throw new Error('No valid JSON object found in AI response');
     }
-    return JSON.parse(cleaned);
+    try {
+      return JSON.parse(cleaned);
+    } catch (err) {
+      // Try to fix common AI JSON issues (trailing commas, single quotes)
+      const fixed = cleaned
+        .replace(/,\s*([}\]])/g, '$1')         // remove trailing commas
+        .replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":') // ensure quoted keys
+        .replace(/:\s*'([^']*)'/g, ': "$1"');   // single quotes to double
+      return JSON.parse(fixed);
+    }
   }
 
   // ── Persistence ──────────────────────────────────────────

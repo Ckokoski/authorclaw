@@ -1,8 +1,8 @@
 AUTHORCLAW SKILLS REFERENCE
-Auto-generated on startup — 37 skills loaded
+Auto-generated on startup — 20 skills loaded
 ════════════════════════════════════════════════════════════
 
-── Core Skills (7) ──
+── Core Skills (4) ──
 
   after-action-review
     Structured post-goal reflection that extracts lessons, evaluates quality, and feeds the self-improvement loop
@@ -12,14 +12,6 @@ Auto-generated on startup — 37 skills loaded
     Intelligent error diagnosis, automatic recovery strategies, and prevention of recurring failures
     Keywords: error, fix error, something broke, failed, not working, debug, troubleshoot, diagnose, recovery
 
-  full-pipeline
-    Write a complete novel from scratch — premise through final manuscript
-    Keywords: full pipeline, conductor, write a full book, write entire, complete novel, end to end, from start to finish, write the whole, full novel, entire book
-
-  preference-learner
-    Tracks user preferences, writing habits, and communication style to personalize every interaction
-    Keywords: my preferences, remember that I, I prefer, I like, I don't like, I always want, I never want, update preferences, show preferences, preference
-
   prompt-optimizer
     Automatically improves prompts based on output quality, user feedback, and A/B testing results
     Keywords: optimize prompt, improve prompt, better prompt, prompt quality, test prompts, prompt a/b test, prompt lab
@@ -28,11 +20,7 @@ Auto-generated on startup — 37 skills loaded
     Continuous self-improvement loop — AuthorClaw learns from mistakes, successes, and user feedback to get better over time
     Keywords: self improve, improve yourself, learn from, what did you learn, improvement log, get better, lessons learned, self reflection, review performance
 
-  skill-acquisition
-    
-    Keywords: learn how to, add a skill for, find a tool for, go learn, research and create a skill, teach yourself, acquire skill, learn about
-
-── Author Skills (17) ──
+── Author Skills (14) ──
 
   beta-reader
     Simulate beta reader feedback from different reader perspectives
@@ -41,6 +29,10 @@ Auto-generated on startup — 37 skills loaded
   book-bible
     Maintain world consistency - characters, timeline, locations, rules, items
     Keywords: book bible, character, character sheet, timeline, world building, world bible, consistency, continuity
+
+  continuity-check
+    Scan manuscript for inconsistencies in characters, timeline, settings, and names
+    Keywords: continuity, continuity check, consistency check, find inconsistencies, timeline check, plot holes, check continuity
 
   dialogue
     Craft authentic dialogue with distinct character voices and subtext
@@ -58,10 +50,6 @@ Auto-generated on startup — 37 skills loaded
     Track word count, chapters, progress, streaks, and project status
     Keywords: word count, progress, manuscript status, how's my book, writing streak, new project, start a new
 
-  market-research
-    Analyze comp titles, genre trends, pricing strategies, and market positioning
-    Keywords: market research, comp titles, genre trends, pricing, bestseller, competition
-
   nonfiction-research
     Academic source gathering, citation management, fact-checking for nonfiction
     Keywords: nonfiction, citation, cite, bibliography, source, academic, fact check, reference
@@ -74,14 +62,6 @@ Auto-generated on startup — 37 skills loaded
     Develop compelling story premises with market awareness and emotional hooks
     Keywords: premise, story idea, book concept, what if, high concept, elevator pitch
 
-  promote
-    Write blurbs, taglines, social media posts, ad copy, author bios
-    Keywords: promote, blurb, tagline, social media, ad copy, book description, author bio, marketing, amazon description
-
-  query-letter
-    Craft compelling query letters and track submissions to literary agents
-    Keywords: query letter, agent submission, pitch my book, query tracker
-
   research
     Constrained internet research with source tracking for fiction and nonfiction projects
     Keywords: research, look up, find out about, fact check, what is, source
@@ -89,10 +69,6 @@ Auto-generated on startup — 37 skills loaded
   revise
     Multi-pass revision - developmental editing, line editing, copy editing
     Keywords: revise, edit, improve, rewrite, feedback, critique, review, developmental edit, line edit, copy edit
-
-  series-bible
-    Track multi-book continuity, character arcs across books, series-level planning
-    Keywords: series, series bible, book two, sequel, next book, multi-book, series arc
 
   style-clone
     Analyze and match the author's unique writing voice
@@ -102,7 +78,7 @@ Auto-generated on startup — 37 skills loaded
     Draft scenes, chapters, and passages matching the author's voice and style
     Keywords: write, draft, write a scene, write chapter, continue writing, write the
 
-── Marketing Skills (4) ──
+── Marketing Skills (2) ──
 
   ad-copy
     Write ad copy for Amazon AMS, BookBub, Facebook, and other book advertising platforms
@@ -111,50 +87,4 @@ Auto-generated on startup — 37 skills loaded
   blurb-writer
     Write compelling book blurbs and descriptions for Amazon, Goodreads, and back cover
     Keywords: blurb, book description, back cover, amazon description
-
-  email-list
-    Write email sequences for reader magnets, launches, and ongoing newsletters
-    Keywords: email, newsletter, email sequence, reader magnet, email list, welcome sequence
-
-  social-media
-    Create engaging social media content for book promotion across platforms
-    Keywords: social media, twitter, instagram, tiktok, booktok, bookstagram, facebook post
-
-── Premium Skills (9) ★ ──
-
-  book-launch-machine
-    Complete book launch automation - from pre-launch to post-launch with email sequences, social campaigns, and ad copy generation
-    Keywords: launch, book launch, launch plan, pre-launch, launch day, release, publish, go live
-
-  comp-title-finder
-    Find and analyze comparable titles for query letters, marketing, and positioning strategy
-    Keywords: comp title, comp titles, comparable, comparison title, query letter comp, market position, books like mine, similar books
-
-  dictation-cleanup
-    Transform raw speech-to-text dictation into polished prose while preserving the author's natural voice
-    Keywords: dictation, clean up dictation, speech to text, transcription cleanup, dictated text, voice draft, raw transcript, fix dictation
-
-  first-chapter-hook
-    Analyze and rewrite first chapters for maximum reader retention using genre-specific hook patterns
-    Keywords: first chapter, opening hook, hook analysis, chapter one, first page, opening line, reader retention, hook score
-
-  ghostwriter-pro
-    Advanced AI co-writing with scene generation, pacing analysis, tension mapping, and chapter assembly
-    Keywords: ghostwriter, co-write, write with me, generate scene, pacing analysis, tension map, assemble chapter, deep write
-
-  narrative-voice-coach
-    Deep analysis and coaching for developing a distinctive, consistent narrative voice across your manuscript
-    Keywords: voice coach, narrative voice, writing voice, voice analysis, style coaching, find my voice, voice consistency, prose style
-
-  read-aloud
-    Text-to-speech read-aloud for manuscripts using free open-source Piper TTS with natural-sounding voices
-    Keywords: read aloud, read this, speak, text to speech, tts, listen, audio preview, read chapter, hear it
-
-  sensitivity-reader
-    AI-assisted sensitivity review for representation, cultural accuracy, and potential reader concerns
-    Keywords: sensitivity read, sensitivity review, sensitivity check, representation check, cultural review, bias check, inclusive review, sensitivity reader
-
-  series-architect
-    Complete multi-book series planning, cross-book continuity engine, and arc tracking
-    Keywords: plan series, series architect, multi-book, series outline, cross-book, book series
 

@@ -54,9 +54,25 @@ export class Vault {
     // Derive master key from environment variable
     let passphrase = process.env.AUTHORCLAW_VAULT_KEY || '';
     if (!passphrase) {
-      // Auto-generate a vault key and save to .env for persistence
+      // Try to read existing .env file and extract the key
       const envPath = join(this.vaultPath, '..', '..', '.env');
-      if (!existsSync(envPath)) {
+      if (existsSync(envPath)) {
+        try {
+          const envContent = await readFile(envPath, 'utf-8');
+          const match = envContent.match(/^AUTHORCLAW_VAULT_KEY=(.+)$/m);
+          if (match && match[1].trim()) {
+            passphrase = match[1].trim();
+            process.env.AUTHORCLAW_VAULT_KEY = passphrase;
+            console.log('  🔑 Loaded vault key from .env file.');
+          } else {
+            console.warn('  ⚠️  WARNING: .env exists but AUTHORCLAW_VAULT_KEY not found in it.');
+            console.warn('     Using a random session key. Vault data will NOT persist across restarts.');
+          }
+        } catch {
+          console.warn('  ⚠️  WARNING: Could not read .env file.');
+          console.warn('     Using a random session key. Vault data will NOT persist across restarts.');
+        }
+      } else {
         // First run — generate and persist
         const generated = randomBytes(32).toString('hex');
         try {
@@ -69,9 +85,6 @@ export class Vault {
           console.warn('     Using a random session key. Vault data will NOT persist across restarts.');
           console.warn('     Set AUTHORCLAW_VAULT_KEY environment variable for production use.');
         }
-      } else {
-        console.warn('  ⚠️  WARNING: AUTHORCLAW_VAULT_KEY not set (check your .env file).');
-        console.warn('     Using a random session key. Vault data will NOT persist across restarts.');
       }
     }
     const effectivePassphrase = passphrase || randomBytes(32).toString('hex');
