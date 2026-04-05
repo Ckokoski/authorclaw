@@ -39,6 +39,9 @@ import { ImageGenService } from './services/image-gen.js';
 import { ProjectEngine } from './services/projects.js';
 import { PersonaService } from './services/personas.js';
 import { ContextEngine } from './services/context-engine.js';
+import { LessonStore } from './services/lessons.js';
+import { PreferenceStore } from './services/preferences.js';
+import { OrchestratorService } from './services/orchestrator.js';
 import { TelegramBridge } from './bridges/telegram.js';
 import { DiscordBridge } from './bridges/discord.js';
 import { createAPIRoutes } from './api/routes.js';
@@ -83,6 +86,9 @@ class AuthorClawGateway {
   private personas!: PersonaService;
   private projectEngine!: ProjectEngine;
   private contextEngine!: ContextEngine;
+  private lessons!: LessonStore;
+  private preferences!: PreferenceStore;
+  private orchestrator!: OrchestratorService;
   private telegram?: TelegramBridge;
   private discord?: DiscordBridge;
 
@@ -269,6 +275,24 @@ class AuthorClawGateway {
     this.contextEngine = new ContextEngine(join(ROOT_DIR, 'workspace'));
     this.projectEngine.setContextEngine(this.contextEngine);
     console.log('  ✓ Context Engine: manuscript memory + continuity checking');
+
+    // ── Phase 6g: Lessons & Preferences (from Sneakers) ──
+    this.lessons = new LessonStore(join(ROOT_DIR, 'workspace', 'memory'));
+    await this.lessons.initialize();
+    console.log(`  ✓ Lessons: ${this.lessons.getAll().length} learned`);
+
+    this.preferences = new PreferenceStore(join(ROOT_DIR, 'workspace', 'memory'));
+    await this.preferences.initialize();
+    const prefCount = Object.keys(this.preferences.getAll()).length;
+    console.log(`  ✓ Preferences: ${prefCount} tracked`);
+
+    // ── Phase 6h: Orchestrator (script manager) ──
+    this.orchestrator = new OrchestratorService(join(ROOT_DIR, 'workspace'));
+    await this.orchestrator.initialize();
+    const scriptCount = this.orchestrator.getConfigs().length;
+    console.log(`  ✓ Orchestrator: ${scriptCount} script(s) configured`);
+    await this.orchestrator.autoStartAll();
+    this.orchestrator.startHealthCheck();
 
     // ── Phase 7: Heartbeat ──
     this.heartbeat = new HeartbeatService(this.config.get('heartbeat'), this.memory);
@@ -645,6 +669,21 @@ class AuthorClawGateway {
     // ── Log the interaction ──
     this.audit.log('message', 'received', { channel, length: content.length });
 
+    // ── Detect user preferences from message ──
+    try {
+      const detected = await this.preferences.detectFromMessage(content);
+      if (detected.length > 0) {
+        this.activityLog.log({
+          type: 'preference_detected',
+          source: channel.startsWith('telegram:') ? 'telegram' : channel === 'api' ? 'api' : 'dashboard',
+          message: `Auto-detected ${detected.length} preference(s): ${detected.map(d => d.key).join(', ')}`,
+          metadata: { preferences: detected },
+        });
+      }
+    } catch {
+      // Preference detection should never block message handling
+    }
+
     // ── Build context ──
     const soul = this.soul.getFullContext();
     const memories = await this.memory.getRelevant(content);
@@ -885,6 +924,25 @@ class AuthorClawGateway {
       prompt += context.heartbeatContext + '\n\n';
     }
 
+    // ── Lessons Learned (from self-improvement loop) ──
+    if (this.lessons) {
+      const lessonsContext = this.lessons.buildContext(500);
+      if (lessonsContext) {
+        prompt += '# Lessons Learned\n\n';
+        prompt += 'Apply these lessons from past experience:\n';
+        prompt += lessonsContext + '\n\n';
+      }
+    }
+
+    // ── User Preferences ──
+    if (this.preferences) {
+      const prefsContext = this.preferences.buildContext(300);
+      if (prefsContext) {
+        prompt += '# User Preferences\n\n';
+        prompt += prefsContext + '\n\n';
+      }
+    }
+
     prompt += '# Your Capabilities\n\n';
     prompt += 'You are a fully autonomous writing agent. You CAN and SHOULD:\n';
     prompt += '- Write entire chapters, scenes, or complete outlines when asked\n';
@@ -981,6 +1039,9 @@ class AuthorClawGateway {
       tts: this.tts,
       personas: this.personas,
       contextEngine: this.contextEngine,
+      lessons: this.lessons,
+      preferences: this.preferences,
+      orchestrator: this.orchestrator,
     };
   }
 

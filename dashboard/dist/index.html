@@ -906,6 +906,60 @@ textarea { resize: vertical; min-height: 60px; }
         <div id="backupList" style="margin-top:8px;"></div>
       </div>
 
+      <!-- Lessons Learned -->
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Lessons Learned</span>
+          <button class="small danger" id="btnResetLessons" style="font-size:11px;padding:4px 10px;">Reset All</button>
+        </div>
+        <p class="hint" style="margin-bottom:8px;">AuthorClaw learns from experience. High-confidence lessons are injected into every prompt.</p>
+        <div id="lessonsList" style="max-height:300px;overflow-y:auto;">
+          <div style="color:var(--muted);">Loading...</div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;">
+          <input type="text" id="newLessonText" placeholder="Add a lesson manually..." style="flex:1;">
+          <select id="newLessonCategory" style="max-width:160px;">
+            <option value="writing_quality">Writing Quality</option>
+            <option value="style_voice">Style & Voice</option>
+            <option value="project_planning">Project Planning</option>
+            <option value="user_communication">Communication</option>
+            <option value="general">General</option>
+          </select>
+          <button class="success" id="btnAddLesson">Add</button>
+        </div>
+      </div>
+
+      <!-- User Preferences -->
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>User Preferences</span>
+          <button class="small danger" id="btnResetPreferences" style="font-size:11px;padding:4px 10px;">Reset All</button>
+        </div>
+        <p class="hint" style="margin-bottom:8px;">Auto-detected from your messages (e.g. "I prefer first person POV"). You can also add or remove them here.</p>
+        <div id="preferencesList" style="max-height:300px;overflow-y:auto;">
+          <div style="color:var(--muted);">Loading...</div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;">
+          <input type="text" id="newPrefKey" placeholder="Key (e.g. writing.pov)" style="width:180px;">
+          <input type="text" id="newPrefValue" placeholder="Value (e.g. first person)" style="flex:1;">
+          <button class="success" id="btnAddPreference">Add</button>
+        </div>
+      </div>
+
+      <!-- Orchestrator (Script Manager) -->
+      <div class="card">
+        <div class="card-title">Script Manager</div>
+        <p class="hint" style="margin-bottom:8px;">Manage background scripts and processes. Auto-restart on crash, health monitoring, and log viewing.</p>
+        <div id="orchestratorScripts" style="margin-bottom:12px;">
+          <div style="color:var(--muted);">Loading...</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input type="text" id="newScriptName" placeholder="Script name" style="width:140px;">
+          <input type="text" id="newScriptCommand" placeholder="Command (e.g. node server.js)" style="flex:1;">
+          <button class="success" id="btnAddScript">Add Script</button>
+        </div>
+      </div>
+
       <!-- Autonomous Mode -->
       <div class="card">
         <div class="card-title">Autonomous Mode</div>
@@ -1085,6 +1139,9 @@ function switchPanel(name) {
     loadVoices();
     loadIdleTasks();
     loadBackups();
+    loadLessons();
+    loadPreferences();
+    loadOrchestrator();
   } else if (name === 'home') {
     loadProjects();
     loadHomeStats();
@@ -2990,6 +3047,166 @@ function formatTimeAgo(iso) {
   if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
   return Math.floor(diff/86400) + 'd ago';
 }
+
+// ================================================================
+// LESSONS
+// ================================================================
+function loadLessons() {
+  api('GET', '/api/lessons').then(function(data) {
+    var el = document.getElementById('lessonsList');
+    var lessons = data.lessons || [];
+    if (lessons.length === 0) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:13px;">No lessons yet. AuthorClaw will learn from experience over time.</div>';
+      return;
+    }
+    el.innerHTML = lessons.sort(function(a,b) { return b.confidence - a.confidence; }).map(function(l) {
+      var conf = Math.round(l.confidence * 100);
+      var color = conf >= 70 ? 'var(--success)' : conf >= 40 ? 'var(--warning, orange)' : 'var(--muted)';
+      return '<div style="padding:8px 10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:6px;font-size:13px;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+        '<span style="font-weight:600;color:' + color + ';">' + conf + '%</span>' +
+        '<span style="color:var(--muted);font-size:11px;">' + l.category + ' | ' + l.source + '</span>' +
+        '</div>' +
+        '<div style="margin-top:4px;">' + l.lesson + '</div>' +
+        '</div>';
+    }).join('');
+  }).catch(function() {
+    document.getElementById('lessonsList').innerHTML = '<div style="color:var(--muted);">Could not load</div>';
+  });
+}
+
+document.getElementById('btnAddLesson').addEventListener('click', function() {
+  var text = document.getElementById('newLessonText').value.trim();
+  var category = document.getElementById('newLessonCategory').value;
+  if (!text) return showToast('Enter a lesson', 'error');
+  api('POST', '/api/lessons', { lesson: text, category: category, source: 'user-feedback', confidence: 0.7 }).then(function() {
+    document.getElementById('newLessonText').value = '';
+    showToast('Lesson added', 'success');
+    loadLessons();
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
+
+document.getElementById('btnResetLessons').addEventListener('click', function() {
+  if (!confirm('Reset all lessons? This cannot be undone.')) return;
+  api('DELETE', '/api/lessons').then(function() {
+    showToast('Lessons reset', 'info');
+    loadLessons();
+  });
+});
+
+// ================================================================
+// PREFERENCES
+// ================================================================
+function loadPreferences() {
+  api('GET', '/api/preferences').then(function(data) {
+    var el = document.getElementById('preferencesList');
+    var prefs = data.preferences || {};
+    var meta = data.metadata || {};
+    var keys = Object.keys(prefs);
+    if (keys.length === 0) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:13px;">No preferences detected yet. Try saying "I prefer first person POV" in chat.</div>';
+      return;
+    }
+    el.innerHTML = keys.map(function(key) {
+      var source = meta[key] ? meta[key].source : 'unknown';
+      var badge = source === 'explicit' ? 'color:var(--success)' : source === 'inferred' ? 'color:var(--warning, orange)' : 'color:var(--muted)';
+      return '<div style="padding:6px 10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;font-size:13px;display:flex;justify-content:space-between;align-items:center;">' +
+        '<div><strong>' + key + '</strong>: ' + prefs[key] + ' <span style="font-size:11px;' + badge + ';">(' + source + ')</span></div>' +
+        '<button class="small danger" onclick="deletePreference(\'' + key.replace(/'/g, "\\'") + '\')" style="font-size:10px;padding:2px 8px;">X</button>' +
+        '</div>';
+    }).join('');
+  }).catch(function() {
+    document.getElementById('preferencesList').innerHTML = '<div style="color:var(--muted);">Could not load</div>';
+  });
+}
+
+window.deletePreference = function(key) {
+  api('DELETE', '/api/preferences/' + encodeURIComponent(key)).then(function() {
+    showToast('Preference removed', 'info');
+    loadPreferences();
+  });
+};
+
+document.getElementById('btnAddPreference').addEventListener('click', function() {
+  var key = document.getElementById('newPrefKey').value.trim();
+  var value = document.getElementById('newPrefValue').value.trim();
+  if (!key || !value) return showToast('Enter key and value', 'error');
+  api('POST', '/api/preferences', { key: key, value: value, source: 'explicit' }).then(function() {
+    document.getElementById('newPrefKey').value = '';
+    document.getElementById('newPrefValue').value = '';
+    showToast('Preference saved', 'success');
+    loadPreferences();
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
+
+document.getElementById('btnResetPreferences').addEventListener('click', function() {
+  if (!confirm('Reset all preferences? This cannot be undone.')) return;
+  api('DELETE', '/api/preferences').then(function() {
+    showToast('Preferences reset', 'info');
+    loadPreferences();
+  });
+});
+
+// ================================================================
+// ORCHESTRATOR
+// ================================================================
+function loadOrchestrator() {
+  api('GET', '/api/orchestrator/status').then(function(data) {
+    var el = document.getElementById('orchestratorScripts');
+    var scripts = data.scripts || [];
+    if (scripts.length === 0) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:13px;">No scripts configured. Add a background script to manage.</div>';
+      return;
+    }
+    el.innerHTML = scripts.map(function(s) {
+      var stateColor = s.state === 'running' ? 'var(--success)' : s.state === 'crashed' ? 'var(--danger, red)' : 'var(--muted)';
+      var uptime = s.uptime ? Math.round(s.uptime / 1000 / 60) + 'm' : '-';
+      return '<div style="padding:8px 10px;background:var(--bg-secondary);border-radius:6px;margin-bottom:6px;font-size:13px;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+        '<div><strong>' + s.name + '</strong> <span style="color:' + stateColor + ';font-size:12px;">' + s.state.toUpperCase() + '</span></div>' +
+        '<div style="display:flex;gap:4px;">' +
+        (s.state === 'running'
+          ? '<button class="small danger" onclick="orchAction(\'' + s.id + '\',\'stop\')" style="font-size:10px;padding:2px 8px;">Stop</button>'
+          : '<button class="small success" onclick="orchAction(\'' + s.id + '\',\'start\')" style="font-size:10px;padding:2px 8px;">Start</button>') +
+        '<button class="small" onclick="orchAction(\'' + s.id + '\',\'restart\')" style="font-size:10px;padding:2px 8px;">Restart</button>' +
+        '<button class="small danger" onclick="orchRemove(\'' + s.id + '\')" style="font-size:10px;padding:2px 8px;">X</button>' +
+        '</div></div>' +
+        '<div style="color:var(--muted);font-size:11px;margin-top:4px;">PID: ' + (s.pid || '-') + ' | Uptime: ' + uptime + ' | Restarts: ' + s.restartCount + '</div>' +
+        (s.lastError ? '<div style="color:var(--danger, red);font-size:11px;margin-top:2px;">Last error: ' + s.lastError + '</div>' : '') +
+        '</div>';
+    }).join('');
+  }).catch(function() {
+    document.getElementById('orchestratorScripts').innerHTML = '<div style="color:var(--muted);">Could not load</div>';
+  });
+}
+
+window.orchAction = function(id, action) {
+  api('POST', '/api/orchestrator/scripts/' + id + '/' + action).then(function() {
+    showToast('Script ' + action + 'ed', 'success');
+    setTimeout(loadOrchestrator, 500);
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+};
+
+window.orchRemove = function(id) {
+  if (!confirm('Remove this script?')) return;
+  api('DELETE', '/api/orchestrator/scripts/' + id).then(function() {
+    showToast('Script removed', 'info');
+    loadOrchestrator();
+  });
+};
+
+document.getElementById('btnAddScript').addEventListener('click', function() {
+  var name = document.getElementById('newScriptName').value.trim();
+  var command = document.getElementById('newScriptCommand').value.trim();
+  if (!name || !command) return showToast('Enter script name and command', 'error');
+  var id = 'script-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  api('POST', '/api/orchestrator/scripts', { id: id, name: name, command: command, args: [], autoRestart: true, tags: [] }).then(function() {
+    document.getElementById('newScriptName').value = '';
+    document.getElementById('newScriptCommand').value = '';
+    showToast('Script added', 'success');
+    loadOrchestrator();
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
 
 // ================================================================
 // INITIALIZATION

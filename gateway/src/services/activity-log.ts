@@ -24,6 +24,8 @@ export type ActivityType =
   | 'skill_matched'
   | 'file_saved'
   | 'provider_selected'
+  | 'preference_detected'
+  | 'lesson_learned'
   | 'error'
   | 'system';
 
