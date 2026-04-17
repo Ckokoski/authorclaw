@@ -49,6 +49,11 @@ import { ManuscriptHubService } from './services/manuscript-hub.js';
 import { CoverTypographyService } from './services/cover-typography.js';
 import { ExternalToolsService } from './services/external-tools.js';
 import { TrackChangesService } from './services/track-changes.js';
+import { GoalsService } from './services/goals.js';
+import { SeriesBibleService } from './services/series-bible.js';
+import { CraftCriticService } from './services/craft-critic.js';
+import { AudiobookPrepService } from './services/audiobook-prep.js';
+import { StyleCloneService } from './services/style-clone.js';
 import { TelegramBridge } from './bridges/telegram.js';
 import { DiscordBridge } from './bridges/discord.js';
 import { createAPIRoutes } from './api/routes.js';
@@ -103,6 +108,11 @@ class AuthorClawGateway {
   private coverTypography!: CoverTypographyService;
   private externalTools!: ExternalToolsService;
   private trackChanges!: TrackChangesService;
+  private goalsService!: GoalsService;
+  private seriesBible!: SeriesBibleService;
+  private craftCritic!: CraftCriticService;
+  private audiobookPrep!: AudiobookPrepService;
+  private styleClone!: StyleCloneService;
   private telegram?: TelegramBridge;
   private discord?: DiscordBridge;
 
@@ -331,6 +341,20 @@ class AuthorClawGateway {
     this.externalTools = new ExternalToolsService(ROOT_DIR);
     this.trackChanges = new TrackChangesService();
     console.log('  ✓ KDP exporter, beta reader, dialogue auditor, hub, cover typography, external tools, track-changes ready');
+
+    // ── Phase 6j: Wave 2 — career/craft/series/audiobook/voice ──
+    this.goalsService = new GoalsService(join(ROOT_DIR, 'workspace'));
+    await this.goalsService.initialize();
+    console.log(`  ✓ Author goals: ${this.goalsService.listGoals().length} tracked`);
+
+    this.seriesBible = new SeriesBibleService(join(ROOT_DIR, 'workspace'));
+    await this.seriesBible.initialize();
+    console.log(`  ✓ Series bible: ${this.seriesBible.listSeries().length} series`);
+
+    this.craftCritic = new CraftCriticService();
+    this.audiobookPrep = new AudiobookPrepService();
+    this.styleClone = new StyleCloneService();
+    console.log('  ✓ Craft critic, audiobook prep, style clone ready');
 
     // ── Phase 7: Heartbeat ──
     this.heartbeat = new HeartbeatService(this.config.get('heartbeat'), this.memory);
@@ -1097,6 +1121,11 @@ class AuthorClawGateway {
       coverTypography: this.coverTypography,
       externalTools: this.externalTools,
       trackChanges: this.trackChanges,
+      goals: this.goalsService,
+      seriesBible: this.seriesBible,
+      craftCritic: this.craftCritic,
+      audiobookPrep: this.audiobookPrep,
+      styleClone: this.styleClone,
     };
   }
 
