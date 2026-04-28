@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Cache-busting: prevents stale dashboard after a git pull / version bump.
+     If you see missing UI features, hard-refresh (Ctrl+Shift+R / Cmd+Shift+R). -->
+<meta http-equiv="cache-control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="pragma" content="no-cache">
+<meta http-equiv="expires" content="0">
+<meta name="dashboard-version" content="5.0.0">
 <title>AuthorClaw Dashboard</title>
 <style>
 /* ================================================================
@@ -842,12 +848,45 @@ textarea { resize: vertical; min-height: 60px; }
          ═══════════════════════════════ -->
     <div class="panel" id="panel-settings">
 
-      <!-- API Keys -->
-      <div class="card">
-        <div class="card-title">API Keys</div>
-        <p class="hint" style="margin-bottom:12px;">Keys are encrypted with AES-256-GCM in the vault. Values are never displayed.</p>
+      <!-- Quick-start banner — only shown when no providers are active -->
+      <div class="card" id="quickStartBanner" style="background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border-left:4px solid var(--accent);display:none;">
+        <div class="card-title" style="color:#78350f;">Welcome — connect at least one AI provider to get started</div>
+        <p style="color:#78350f;margin-bottom:8px;font-size:14px;">AuthorClaw needs an API key (paid) or a local Ollama install (free) to write. Pick one:</p>
+        <ul style="color:#78350f;margin-left:24px;margin-bottom:8px;font-size:14px;">
+          <li><strong>Free + cloud:</strong> Get a Gemini API key from Google AI Studio (link below)</li>
+          <li><strong>Free + local:</strong> Install Ollama and run <code>ollama serve</code> — auto-detected</li>
+          <li><strong>Paid + best quality:</strong> Get a Claude or OpenAI key</li>
+        </ul>
+      </div>
+
+      <!-- API Keys (cloud providers — paid + free-tier) -->
+      <div class="card" id="apiKeysCard">
+        <div class="card-title">API Keys (Cloud Providers)</div>
+        <p class="hint" style="margin-bottom:12px;">Keys are encrypted with AES-256-GCM in the local vault. Values are never sent anywhere except the provider's own API. Click <em>Get key</em> next to a provider to open its sign-up page.</p>
         <div id="apiKeyProviders"></div>
-        <div class="key-list" id="keyList"></div>
+        <div class="key-list" id="keyList" style="margin-top:8px;"></div>
+        <p class="hint" style="margin-top:12px;font-size:12px;">Need to load keys from a shared folder (VM / Docker)? <button class="small" id="btnLoadKeysFromFiles" style="font-size:11px;padding:3px 8px;">Load from files</button></p>
+      </div>
+
+      <!-- Local AI (Ollama) — no key needed -->
+      <div class="card" id="ollamaCard">
+        <div class="card-title">Local AI (Ollama) — free, no key</div>
+        <p class="hint" style="margin-bottom:12px;">Ollama runs models on your own machine. No API key. Auto-detected when running. Default endpoint: <code>http://localhost:11434</code></p>
+        <div id="ollamaStatus" style="padding:8px 12px;background:var(--bg-secondary);border-radius:6px;font-size:13px;margin-bottom:12px;">Checking...</div>
+        <div class="form-group-inline">
+          <div class="form-group">
+            <label>Endpoint</label>
+            <input type="text" id="ollamaEndpoint" placeholder="http://localhost:11434">
+          </div>
+          <div class="form-group">
+            <label>Model</label>
+            <input type="text" id="ollamaModel" placeholder="llama3.2">
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="success" id="btnSaveOllama">Save & Reconnect</button>
+          <a href="https://ollama.com/download" target="_blank" rel="noopener" class="small" style="font-size:12px;color:var(--accent);text-decoration:none;align-self:center;">Download Ollama →</a>
+        </div>
       </div>
 
       <!-- Global AI Provider -->
@@ -1142,7 +1181,9 @@ function switchPanel(name) {
   } else if (name === 'library') {
     loadDocuments();
   } else if (name === 'settings') {
+    updateQuickStartBanner();
     loadKeys();
+    loadOllamaConfig();
     loadGlobalProvider();
     loadResearchDomains();
     loadAutonomousStatus();
@@ -2480,25 +2521,42 @@ document.getElementById('fileUploadInput').addEventListener('change', function()
 // ================================================================
 
 // ── API Keys ──
+// Ollama is local-only (auto-detected at http://localhost:11434) — no API key needed.
+// Configure Ollama via the "Local AI (Ollama)" card below the API Keys card.
 var keyProviders = [
-  { key: 'gemini_api_key', label: 'Gemini', tier: 'free' },
-  { key: 'ollama_api_key', label: 'Ollama', tier: 'free' },
-  { key: 'openai_api_key', label: 'OpenAI', tier: 'paid' },
-  { key: 'anthropic_api_key', label: 'Claude (Anthropic)', tier: 'paid' },
-  { key: 'deepseek_api_key', label: 'DeepSeek', tier: 'cheap' },
-  { key: 'together_api_key', label: 'Together AI (images)', tier: 'free' }
+  { key: 'gemini_api_key', label: 'Gemini (free tier)', tier: 'free',
+    helpUrl: 'https://aistudio.google.com/app/apikey',
+    placeholder: 'AIza...' },
+  { key: 'deepseek_api_key', label: 'DeepSeek (cheap)', tier: 'cheap',
+    helpUrl: 'https://platform.deepseek.com/api_keys',
+    placeholder: 'sk-...' },
+  { key: 'anthropic_api_key', label: 'Claude / Anthropic (paid)', tier: 'paid',
+    helpUrl: 'https://console.anthropic.com/settings/keys',
+    placeholder: 'sk-ant-...' },
+  { key: 'openai_api_key', label: 'OpenAI GPT (paid)', tier: 'paid',
+    helpUrl: 'https://platform.openai.com/api-keys',
+    placeholder: 'sk-...' },
+  { key: 'together_api_key', label: 'Together AI (image generation)', tier: 'free',
+    helpUrl: 'https://api.together.xyz/settings/api-keys',
+    placeholder: 'tgp_...' }
 ];
 
 function renderKeyProviders() {
   var el = document.getElementById('apiKeyProviders');
+  if (!el) { console.warn('apiKeyProviders div missing — Settings panel may have failed to load'); return; }
   el.innerHTML = '';
   keyProviders.forEach(function(p) {
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap;';
+    var helpLink = p.helpUrl
+      ? '<a href="' + esc(p.helpUrl) + '" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none;" title="Open ' + esc(p.label) + ' API key page">Get key →</a>'
+      : '';
+    var placeholder = p.placeholder ? esc(p.placeholder) : 'Paste ' + esc(p.label) + ' API key...';
     row.innerHTML =
-      '<span style="min-width:140px;font-weight:600;font-size:14px;">' + esc(p.label) + '</span>' +
-      '<input type="password" class="key-input" data-key="' + esc(p.key) + '" placeholder="Paste ' + esc(p.label) + ' API key..." style="flex:1;min-width:200px;">' +
-      '<button class="small btn-save-key" data-key="' + esc(p.key) + '">Save</button>';
+      '<span style="min-width:160px;font-weight:600;font-size:14px;">' + esc(p.label) + '</span>' +
+      '<input type="password" class="key-input" data-key="' + esc(p.key) + '" placeholder="' + placeholder + '" style="flex:1;min-width:200px;" autocomplete="off">' +
+      '<button class="small btn-save-key" data-key="' + esc(p.key) + '">Save</button>' +
+      (helpLink ? '<span style="margin-left:6px;">' + helpLink + '</span>' : '');
     el.appendChild(row);
   });
 
@@ -2546,6 +2604,73 @@ function loadKeys() {
   }).catch(function() {
     document.getElementById('keyList').innerHTML = '<span style="color:var(--danger);">Could not load keys</span>';
   });
+}
+
+// "Load from files" — shared folder import (existing endpoint)
+var btnLoadKeysFromFiles = document.getElementById('btnLoadKeysFromFiles');
+if (btnLoadKeysFromFiles) {
+  btnLoadKeysFromFiles.addEventListener('click', function() {
+    api('POST', '/api/vault/load-from-files').then(function(data) {
+      var n = (data.loaded || []).length;
+      showToast(n > 0 ? 'Loaded ' + n + ' key(s) from shared folder' : (data.error || 'No keys found in shared folder'),
+                n > 0 ? 'success' : 'info');
+      loadKeys(); loadStatus();
+    }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+  });
+}
+
+// ── Ollama (local AI) configuration ──
+function loadOllamaConfig() {
+  api('GET', '/api/config').then(function(data) {
+    var ep = document.getElementById('ollamaEndpoint');
+    var mdl = document.getElementById('ollamaModel');
+    if (ep) ep.value = (data.ai && data.ai.ollama && data.ai.ollama.endpoint) || 'http://localhost:11434';
+    if (mdl) mdl.value = (data.ai && data.ai.ollama && data.ai.ollama.model) || 'llama3.2';
+  });
+  // Check whether Ollama is currently in the active provider list
+  api('GET', '/api/status').then(function(data) {
+    var status = document.getElementById('ollamaStatus');
+    if (!status) return;
+    var providers = (data && data.providers) || [];
+    var ollama = providers.find(function(p) { return p.id === 'ollama'; });
+    if (ollama) {
+      status.innerHTML = '<span style="color:var(--success);">✓ Ollama detected</span> — model: <code>' + esc(ollama.model || 'llama3.2') + '</code>';
+    } else {
+      status.innerHTML = '<span style="color:var(--muted);">Ollama not detected.</span> Install from ollama.com, run <code>ollama serve</code>, then click Save & Reconnect.';
+    }
+  }).catch(function() {
+    var status = document.getElementById('ollamaStatus');
+    if (status) status.innerHTML = '<span style="color:var(--muted);">Status unknown</span>';
+  });
+}
+
+var btnSaveOllama = document.getElementById('btnSaveOllama');
+if (btnSaveOllama) {
+  btnSaveOllama.addEventListener('click', function() {
+    var ep = document.getElementById('ollamaEndpoint').value.trim() || 'http://localhost:11434';
+    var mdl = document.getElementById('ollamaModel').value.trim() || 'llama3.2';
+    Promise.all([
+      api('POST', '/api/config/update', { path: 'ai.ollama.endpoint', value: ep }),
+      api('POST', '/api/config/update', { path: 'ai.ollama.model', value: mdl }),
+    ]).then(function() {
+      // Trigger AI router reinitialization so the new endpoint takes effect immediately
+      return api('POST', '/api/providers/refresh');
+    }).then(function() {
+      showToast('Ollama config saved & reconnected', 'success');
+      loadOllamaConfig();
+      loadStatus();
+    }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+  });
+}
+
+// ── Quick-start banner — show only when zero providers are connected ──
+function updateQuickStartBanner() {
+  var banner = document.getElementById('quickStartBanner');
+  if (!banner) return;
+  api('GET', '/api/status').then(function(data) {
+    var count = data && data.providers ? data.providers.length : 0;
+    banner.style.display = count === 0 ? 'block' : 'none';
+  }).catch(function() { banner.style.display = 'none'; });
 }
 
 // ── Global Provider Preference ──

@@ -383,7 +383,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   });
 
   // Update a single config value (for dashboard settings)
-  app.post('/api/config/update', (req: Request, res: Response) => {
+  app.post('/api/config/update', async (req: Request, res: Response) => {
     const { path, value } = req.body;
     if (!path) return res.status(400).json({ error: 'path required' });
     const safePaths = [
@@ -399,12 +399,18 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
     if (!safePaths.includes(path)) {
       return res.status(403).json({ error: 'Config path not allowed' });
     }
-    services.config.set(path, value);
-    // Sync global provider preference to router
-    if (path === 'ai.preferredProvider') {
-      services.aiRouter.setGlobalPreferredProvider(value || null);
+    try {
+      // Persist to disk so settings survive restart (was a bug — values were
+      // updating in-memory only, then getting lost on next boot).
+      await services.config.setAndPersist(path, value);
+      // Sync global provider preference to router
+      if (path === 'ai.preferredProvider') {
+        services.aiRouter.setGlobalPreferredProvider(value || null);
+      }
+      res.json({ success: true, path, value });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Config update failed' });
     }
-    res.json({ success: true, path, value });
   });
 
   // ═══════════════════════════════════════════════════════════
