@@ -1,16 +1,28 @@
 /**
  * AuthorClaw TTS Service
- * Text-to-speech using Microsoft Edge TTS (free, no API key, neural voices)
  *
- * Uses the node-edge-tts package to access Microsoft's Edge Read Aloud engine.
- * 300+ voices, 90+ languages, high-quality neural synthesis.
- * Outputs MP3 directly — no ffmpeg or binary installation needed.
+ * Multi-provider text-to-speech. Inspired by OpenClaw 2026.4.25's pluggable
+ * TTS architecture but tightly scoped to author workflows.
+ *
+ * Providers:
+ *   edge        — Microsoft Edge TTS (free, no key, ~300 voices, default)
+ *   elevenlabs  — ElevenLabs v3 (paid, audiobook-grade narration; uses
+ *                 the ElevenLabs API key from the vault)
+ *
+ * Voice resolution priority (highest first):
+ *   1. Explicit voice/preset passed to generate()
+ *   2. Persona's ttsVoice (when generating for a project with a persona)
+ *   3. Globally configured voice (settings)
+ *   4. Default voice
  */
 
 import { mkdir, readdir, stat, readFile, unlink, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
+import type { Vault } from '../security/vault.js';
+
+export type TTSProviderId = 'edge' | 'elevenlabs';
 
 export interface TTSResult {
   success: boolean;
@@ -19,6 +31,7 @@ export interface TTSResult {
   format?: string;
   size?: number;
   duration?: number; // estimated seconds
+  provider?: TTSProviderId;
   error?: string;
 }
 
@@ -43,6 +56,11 @@ export class TTSService {
   private defaultVoice = 'en-US-AriaNeural';
   private defaultPreset = 'narrator_female';
   private configuredVoice: string | null = null;
+  private configuredProvider: TTSProviderId = 'edge';
+  private vault: Vault | null = null;
+  // Cache of ElevenLabs voices to avoid re-fetching on every call.
+  private elevenLabsVoicesCache: Array<{ voice_id: string; name: string; labels?: any }> | null = null;
+  private elevenLabsVoicesFetchedAt = 0;
 
   // Author-focused voice presets (from AuthorScribe Audio)
   static readonly VOICE_PRESETS: Record<string, VoicePreset> = {
@@ -102,9 +120,15 @@ export class TTSService {
     },
   };
 
-  constructor(workspaceDir: string) {
+  constructor(workspaceDir: string, vault?: Vault) {
     this.audioDir = join(workspaceDir, 'audio');
     this.configDir = join(workspaceDir, '.config');
+    this.vault = vault || null;
+  }
+
+  /** Wire vault after construction (so we can resolve ElevenLabs API key on demand). */
+  setVault(vault: Vault): void {
+    this.vault = vault;
   }
 
   async initialize(): Promise<void> {
@@ -123,55 +147,107 @@ export class TTSService {
       if (config.voice && typeof config.voice === 'string') {
         this.configuredVoice = config.voice;
       }
+      if (config.provider === 'edge' || config.provider === 'elevenlabs') {
+        this.configuredProvider = config.provider;
+      }
     } catch { /* no config yet — use default */ }
   }
 
   async setVoice(voice: string): Promise<void> {
     this.configuredVoice = voice;
+    await this.persistConfig();
+  }
+
+  async setProvider(provider: TTSProviderId): Promise<void> {
+    this.configuredProvider = provider;
+    await this.persistConfig();
+  }
+
+  private async persistConfig(): Promise<void> {
     const configPath = join(this.configDir, 'tts.json');
-    await writeFile(configPath, JSON.stringify({ voice }, null, 2));
+    await writeFile(configPath, JSON.stringify({
+      voice: this.configuredVoice,
+      provider: this.configuredProvider,
+    }, null, 2));
   }
 
   getActiveVoice(): string {
     return this.configuredVoice || this.defaultVoice;
   }
 
-  /** Edge TTS is always available (only needs internet) */
-  isAvailable(): boolean {
-    return true;
+  getActiveProvider(): TTSProviderId {
+    return this.configuredProvider;
+  }
+
+  /** Edge TTS is always available (only needs internet); ElevenLabs needs an API key. */
+  isAvailable(provider: TTSProviderId = 'edge'): boolean {
+    if (provider === 'edge') return true;
+    if (provider === 'elevenlabs') return !!this.vault; // can probe further at call time
+    return false;
   }
 
   // ── Voice Resolution ──
 
   /**
-   * Resolve a voice input to a Microsoft voice ID.
-   * Accepts: preset name ('narrator_deep'), voice ID ('en-US-DavisNeural'), or null (use default).
+   * Resolve a voice input to a provider-appropriate voice ID.
+   * Accepts: preset name ('narrator_deep'), voice ID, or null (use default).
+   * For ElevenLabs voices the input should be a voice_id; for Edge voices it
+   * should be the Microsoft voice name.
    */
   resolveVoice(input?: string): string {
     if (!input) return this.getActiveVoice();
-    // Check if it's a preset name
+    // Check if it's a preset name (Edge presets)
     const preset = TTSService.VOICE_PRESETS[input.toLowerCase()];
     if (preset) return preset.voice;
-    // Otherwise treat as a raw voice ID
+    // Otherwise treat as a raw voice ID (works for both Edge and ElevenLabs)
     return input;
+  }
+
+  /**
+   * Detect which provider a given voice ID belongs to.
+   * - Edge voices look like 'en-US-AriaNeural' (lang-region-name pattern)
+   * - ElevenLabs voice_ids are 20-char alphanumeric strings
+   * Falls back to the configured provider if pattern is ambiguous.
+   */
+  detectProviderForVoice(voice: string): TTSProviderId {
+    if (/^[a-z]{2}-[A-Z]{2}-\w+Neural$/.test(voice)) return 'edge';
+    if (/^[A-Za-z0-9]{18,24}$/.test(voice) && !voice.includes('-')) return 'elevenlabs';
+    return this.configuredProvider;
   }
 
   // ── Audio Generation ──
 
   /**
-   * Generate audio from text using Microsoft Edge TTS.
-   * Returns the file path of the generated MP3.
+   * Generate audio from text. Dispatches to the right provider based on
+   * options.provider, options.voice fingerprint, or the configured default.
+   *
+   * Voice priority: explicit voice > persona's voice (caller injects it via
+   * the `voice` option) > configured global > default preset.
    */
   async generate(text: string, options: {
     voice?: string;
-    rate?: string;   // e.g. '+10%', '-20%', '+0%'
-    pitch?: string;  // e.g. '+5Hz', '-10Hz', '+0Hz'
-    volume?: string; // e.g. '+0%', '-50%'
+    provider?: TTSProviderId;     // Force a specific provider
+    rate?: string;                // Edge: '+10%' / '-20%' / '+0%' | ElevenLabs: applied as stability
+    pitch?: string;               // Edge only
+    volume?: string;              // Edge only
+    elevenLabsModel?: string;     // ElevenLabs only — defaults to eleven_v3
   } = {}): Promise<TTSResult> {
+    const voice = this.resolveVoice(options.voice);
+    // Provider precedence: explicit override > voice-id-based detection > configured default
+    const provider = options.provider || this.detectProviderForVoice(voice) || this.configuredProvider;
+
+    if (provider === 'elevenlabs') {
+      return this.generateElevenLabs(text, voice, options);
+    }
+    return this.generateEdge(text, voice, options);
+  }
+
+  private async generateEdge(text: string, voice: string, options: {
+    rate?: string; pitch?: string; volume?: string;
+  }): Promise<TTSResult> {
     // Lazy import to avoid issues if package isn't installed
     const { EdgeTTS } = await import('node-edge-tts');
 
-    const voice = this.resolveVoice(options.voice);
     const id = randomBytes(6).toString('hex');
     const filename = `tts-${id}.mp3`;
     const outputFile = join(this.audioDir, filename);
@@ -204,12 +280,146 @@ export class TTSService {
         format: 'mp3',
         size: fileStats.size,
         duration: estimatedDuration,
+        provider: 'edge',
       };
     } catch (error) {
       return {
         success: false,
-        error: `TTS generation failed: ${String(error)}. Make sure you have internet access.`,
+        error: `Edge TTS failed: ${String(error)}. Make sure you have internet access.`,
+        provider: 'edge',
       };
+    }
+  }
+
+  /**
+   * ElevenLabs v3 — production-quality narration with realistic emotion,
+   * paid via the user's API key. Designed for actual audiobook output that
+   * pairs with our existing audiobook-prep service.
+   */
+  private async generateElevenLabs(text: string, voice: string, options: {
+    elevenLabsModel?: string;
+  }): Promise<TTSResult> {
+    if (!this.vault) {
+      return { success: false, error: 'ElevenLabs requires the vault. Service not initialized properly.', provider: 'elevenlabs' };
+    }
+    const apiKey = await this.vault.get('elevenlabs_api_key');
+    if (!apiKey) {
+      return {
+        success: false,
+        error: 'ElevenLabs API key not found in vault. Add `elevenlabs_api_key` in Settings → API Keys.',
+        provider: 'elevenlabs',
+      };
+    }
+
+    const modelId = options.elevenLabsModel || 'eleven_v3';
+    const trimmedText = text.substring(0, 30000); // ElevenLabs cap is 5k chars per request typically; we'll see
+    // ElevenLabs charges per character — guard against accidental huge calls.
+    if (trimmedText.length > 5000) {
+      return {
+        success: false,
+        error: `ElevenLabs requests over 5,000 characters cost a lot of credits. ` +
+          `This text is ${trimmedText.length} chars. Split it into smaller chunks (one per chapter), ` +
+          `or use the Edge TTS provider for longer drafts.`,
+        provider: 'elevenlabs',
+      };
+    }
+
+    const id = randomBytes(6).toString('hex');
+    const filename = `tts-${id}.mp3`;
+    const outputFile = join(this.audioDir, filename);
+
+    try {
+      const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=mp3_44100_128`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'Content-Type': 'application/json',
+          Accept: 'audio/mpeg',
+        },
+        body: JSON.stringify({
+          text: trimmedText,
+          model_id: modelId,
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+            style: 0.3,
+            use_speaker_boost: true,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        // 401 = bad key, 422 = invalid voice_id, 429 = quota.
+        const reason = response.status === 401 ? 'API key rejected'
+          : response.status === 422 ? `voice_id "${voice}" not found in your ElevenLabs library`
+          : response.status === 429 ? 'rate limit / quota exceeded'
+          : `${response.status} ${response.statusText}`;
+        return {
+          success: false,
+          error: `ElevenLabs error: ${reason}. ${body.substring(0, 300)}`,
+          provider: 'elevenlabs',
+        };
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      await writeFile(outputFile, Buffer.from(arrayBuffer));
+
+      const fileStats = await stat(outputFile);
+      const wordCount = trimmedText.split(/\s+/).length;
+      const estimatedDuration = Math.round((wordCount / 150) * 60);
+
+      return {
+        success: true,
+        file: outputFile,
+        filename,
+        format: 'mp3',
+        size: fileStats.size,
+        duration: estimatedDuration,
+        provider: 'elevenlabs',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `ElevenLabs request failed: ${String(error)}`,
+        provider: 'elevenlabs',
+      };
+    }
+  }
+
+  /**
+   * List ElevenLabs voices the user has available (custom + library voices).
+   * Cached for 5 minutes to avoid hammering the API on dashboard refresh.
+   */
+  async listElevenLabsVoices(): Promise<Array<{ voice_id: string; name: string; labels?: any }>> {
+    if (!this.vault) return [];
+    const apiKey = await this.vault.get('elevenlabs_api_key');
+    if (!apiKey) return [];
+
+    const FIVE_MIN = 5 * 60 * 1000;
+    if (this.elevenLabsVoicesCache && Date.now() - this.elevenLabsVoicesFetchedAt < FIVE_MIN) {
+      return this.elevenLabsVoicesCache;
+    }
+
+    try {
+      const response = await fetch('https://api.elevenlabs.io/v2/voices', {
+        headers: { 'xi-api-key': apiKey, Accept: 'application/json' },
+      });
+      if (!response.ok) return [];
+      const data = await response.json() as any;
+      const voices = Array.isArray(data?.voices)
+        ? data.voices.map((v: any) => ({
+            voice_id: v.voice_id,
+            name: v.name,
+            labels: v.labels,
+          }))
+        : [];
+      this.elevenLabsVoicesCache = voices;
+      this.elevenLabsVoicesFetchedAt = Date.now();
+      return voices;
+    } catch {
+      return [];
     }
   }
 

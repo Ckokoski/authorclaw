@@ -1034,6 +1034,49 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
           console.error('[context-engine] Hook error:', contextErr);
         }
 
+        // ── Auto-narrate completed chapter (opt-in via project.context.autoNarrate) ──
+        // Inspired by OpenClaw's chat-scoped /tts auto controls. Generates an audio
+        // preview of the just-completed chapter so the author can listen back without
+        // manually triggering the TTS endpoint. Fire-and-forget — never blocks step flow.
+        try {
+          const autoNarrate = !!currentProject.context?.autoNarrate;
+          const stepLabel = String((activeStep as any).label || '').toLowerCase();
+          const isWritingStep = stepLabel.includes('chapter') || stepLabel.includes('write') ||
+            (activeStep as any).phase === 'writing';
+          if (autoNarrate && isWritingStep && services.tts && response.length > 200) {
+            // Resolve the persona's voice if the project has one — keeps each pen
+            // name's narration consistent across chapters.
+            let voice: string | undefined;
+            const personaId = (currentProject as any).personaId;
+            if (personaId && services.personas) {
+              const persona = services.personas.get?.(personaId);
+              if (persona?.ttsVoice) voice = persona.ttsVoice;
+            }
+            // ElevenLabs costs credits per call. Cap auto-narrate text to a safe length
+            // and warn in the audit log when ElevenLabs is the active provider.
+            const activeProvider = services.tts.getActiveProvider();
+            const cap = activeProvider === 'elevenlabs' ? 3000 : 30000;
+            const narrationText = response.replace(/^#[^\n]+\n+/, '').substring(0, cap);
+            services.tts.generate(narrationText, { voice })
+              .then((result: any) => {
+                if (result.success) {
+                  services.activityLog?.log({
+                    type: 'file_saved',
+                    source: 'internal',
+                    goalId: currentProject.id,
+                    message: `🔊 Auto-narrated "${activeStep.label}" (${result.provider}, ~${result.duration}s) → ${result.filename}`,
+                    metadata: { audioFile: result.filename, voice, provider: result.provider },
+                  });
+                } else {
+                  console.error('[auto-narrate] failed:', result.error);
+                }
+              })
+              .catch((err: any) => console.error('[auto-narrate] error:', err));
+          }
+        } catch (narrationErr) {
+          console.error('[auto-narrate] hook error:', narrationErr);
+        }
+
         // ── Manuscript Assembly: combine chapter files after assembly step ──
         if ((activeStep as any).phase === 'assembly' && currentProject.type === 'novel-pipeline') {
           try {
@@ -2707,12 +2750,39 @@ ${sourceCode.substring(0, 15000)}
   });
 
   // ═══════════════════════════════════════════════════════════
-  // TTS / Audio (Microsoft Edge TTS — free neural voices)
+  // TTS / Audio (Edge TTS free + ElevenLabs paid — pluggable providers)
   // ═══════════════════════════════════════════════════════════
 
-  // Generate audio from text
+  /**
+   * Resolve voice priority: explicit voice > persona's voice > project preset > default.
+   * Used by both /api/audio/generate and the project narration code.
+   */
+  async function resolveVoiceForRequest(opts: {
+    explicitVoice?: string;
+    personaId?: string;
+    projectId?: string;
+  }): Promise<{ voice?: string; provider?: 'edge' | 'elevenlabs' }> {
+    if (opts.explicitVoice) return { voice: opts.explicitVoice };
+    // Try project's linked persona
+    if (opts.projectId && services.projects) {
+      const project = services.projects.getProject?.(opts.projectId);
+      if (project?.personaId && services.personas) {
+        const persona = services.personas.get?.(project.personaId);
+        if (persona?.ttsVoice) return { voice: persona.ttsVoice };
+      }
+    }
+    // Or direct personaId
+    if (opts.personaId && services.personas) {
+      const persona = services.personas.get?.(opts.personaId);
+      if (persona?.ttsVoice) return { voice: persona.ttsVoice };
+    }
+    return {};
+  }
+
+  // Generate audio from text. Provider auto-detected from voice format
+  // (Edge for "en-US-AriaNeural"-style, ElevenLabs for 20-char voice_ids).
   app.post('/api/audio/generate', async (req: Request, res: Response) => {
-    const { text, voice, rate, pitch, volume } = req.body;
+    const { text, voice, rate, pitch, volume, provider, personaId, projectId, elevenLabsModel } = req.body;
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ error: 'Text required' });
     }
@@ -2724,12 +2794,55 @@ ${sourceCode.substring(0, 15000)}
       return res.status(503).json({ error: 'TTS service not initialized' });
     }
 
-    const result = await services.tts.generate(text, { voice, rate, pitch, volume });
+    // Resolve persona-aware voice if no explicit voice was passed.
+    const resolved = await resolveVoiceForRequest({
+      explicitVoice: voice,
+      personaId,
+      projectId,
+    });
+
+    const result = await services.tts.generate(text, {
+      voice: resolved.voice,
+      provider: provider || resolved.provider,
+      rate, pitch, volume,
+      elevenLabsModel,
+    });
     if (result.success) {
       res.json(result);
     } else {
       res.status(500).json(result);
     }
+  });
+
+  // List available voices from all configured providers.
+  // Returns Edge presets always; adds ElevenLabs voices when an API key is configured.
+  app.get('/api/audio/voices', async (_req: Request, res: Response) => {
+    if (!services.tts) return res.status(503).json({ error: 'TTS service not initialized' });
+    const presets = services.tts.listPresets();
+    let elevenLabs: any[] = [];
+    try {
+      elevenLabs = await services.tts.listElevenLabsVoices();
+    } catch { /* non-fatal — feature is optional */ }
+    res.json({
+      activeProvider: services.tts.getActiveProvider(),
+      activeVoice: services.tts.getActiveVoice(),
+      presets,
+      elevenLabs,
+    });
+  });
+
+  // Set the global default TTS provider/voice.
+  app.post('/api/audio/config', async (req: Request, res: Response) => {
+    if (!services.tts) return res.status(503).json({ error: 'TTS service not initialized' });
+    const { voice, provider } = req.body || {};
+    if (voice) await services.tts.setVoice(voice);
+    if (provider === 'edge' || provider === 'elevenlabs') {
+      await services.tts.setProvider(provider);
+    }
+    res.json({
+      activeProvider: services.tts.getActiveProvider(),
+      activeVoice: services.tts.getActiveVoice(),
+    });
   });
 
   // Serve generated audio files

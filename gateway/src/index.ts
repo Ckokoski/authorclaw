@@ -303,7 +303,7 @@ class AuthorClawGateway {
     }
 
     // ── Phase 6c: TTS Service (Piper) — silent init, optional feature ──
-    this.tts = new TTSService(join(ROOT_DIR, 'workspace'));
+    this.tts = new TTSService(join(ROOT_DIR, 'workspace'), this.vault);
     await this.tts.initialize();
 
     // ── Phase 6c2: Image Generation Service ──
@@ -1546,10 +1546,67 @@ class AuthorClawGateway {
         if (!this.tts) return 'TTS service not available.';
         try {
           const result = await this.tts.generate(args, {});
-          return `🔊 Voice generated! Audio saved to: \`${result.file || 'workspace/audio/'}\`\n\nDownload from the **Library** panel.`;
+          if (!result.success) return `Voice generation failed: ${result.error || 'unknown error'}`;
+          const provider = result.provider ? ` (${result.provider})` : '';
+          return `🔊 Voice generated${provider}! Audio saved to: \`${result.file || 'workspace/audio/'}\`\n\nDownload from the **Library** panel.`;
         } catch (err) {
           return `Voice generation failed: ${String(err)}`;
         }
+      }
+
+      case '/tts': {
+        // Inspired by OpenClaw 2026.4.25 /tts commands.
+        // Usage:
+        //   /tts                       — show status
+        //   /tts latest                — narrate the most recently completed step
+        //   /tts persona <name>        — narrate as a specific persona
+        //   /tts provider <edge|elevenlabs> — set default provider
+        if (!this.tts) return 'TTS service not available.';
+        const sub = (args || '').trim().toLowerCase();
+        if (!sub) {
+          return `**TTS status**\n\n• Provider: \`${this.tts.getActiveProvider()}\`\n• Voice: \`${this.tts.getActiveVoice()}\`\n\nSubcommands:\n• \`/tts latest\` — narrate most recently completed step\n• \`/tts persona <name>\` — narrate using a persona's configured voice\n• \`/tts provider <edge|elevenlabs>\` — set default provider`;
+        }
+        if (sub === 'latest') {
+          // Find the most recently active project (sort by updatedAt desc), then take its
+          // last completed step. ProjectStep has no per-step timestamp, so we proxy by
+          // project recency.
+          const projects = (this.projectEngine.listProjects() || [])
+            .filter((p: any) => p.steps?.some((s: any) => s.status === 'completed' && s.result))
+            .sort((a: any, b: any) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+          const latestProject = projects[0];
+          if (!latestProject) return 'No completed steps to narrate. Finish a project step first.';
+          const completed = latestProject.steps.filter((s: any) => s.status === 'completed' && s.result);
+          const latestStep = completed[completed.length - 1];
+          if (!latestStep) return 'No completed steps to narrate.';
+          // Strip the "# <heading>" preamble + cap to ~5000 chars for ElevenLabs friendliness.
+          const text = String(latestStep.result || '').replace(/^#[^\n]+\n+/, '').substring(0, 5000);
+          // Resolve the persona's voice if the project has one.
+          let voice: string | undefined;
+          if (latestProject?.personaId) {
+            const persona = this.personas.get?.(latestProject.personaId);
+            if (persona?.ttsVoice) voice = persona.ttsVoice;
+          }
+          const result = await this.tts.generate(text, { voice });
+          if (!result.success) return `Narration failed: ${result.error}`;
+          return `🔊 Narrated **${latestStep.label}** from "${latestProject.title}" (${result.provider}, ~${result.duration}s).\n\nDownload from the **Library** panel: \`${result.filename}\``;
+        }
+        if (sub.startsWith('persona ')) {
+          const personaName = sub.replace(/^persona\s+/, '').trim();
+          if (!this.personas) return 'Persona service not available.';
+          const all = this.personas.list?.() || [];
+          const match = all.find((p: any) => p.penName?.toLowerCase() === personaName.toLowerCase() || p.id === personaName);
+          if (!match) return `Persona "${personaName}" not found. List them in the **Personas** panel.`;
+          if (!match.ttsVoice) return `Persona "${match.penName}" has no ttsVoice set. Edit the persona in the dashboard.`;
+          await this.tts.setVoice(match.ttsVoice);
+          return `🔊 Default voice set to ${match.penName}'s voice (\`${match.ttsVoice}\`).`;
+        }
+        if (sub.startsWith('provider ')) {
+          const p = sub.replace(/^provider\s+/, '').trim();
+          if (p !== 'edge' && p !== 'elevenlabs') return 'Provider must be `edge` or `elevenlabs`.';
+          await this.tts.setProvider(p);
+          return `TTS provider set to **${p}**.${p === 'elevenlabs' ? ' Make sure `elevenlabs_api_key` is in the vault.' : ''}`;
+        }
+        return `Unknown subcommand "${sub}". Try \`/tts\` for help.`;
       }
 
       case '/voice': {
