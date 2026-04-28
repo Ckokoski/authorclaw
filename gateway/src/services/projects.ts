@@ -1654,6 +1654,69 @@ Description: ${description}`;
   }
 
   /**
+   * Reset a single failed (or active) step back to pending so the user can
+   * retry it. Clears the error message + result. Does NOT delete the step's
+   * file output on disk — caller can do that separately if needed.
+   *
+   * Returns the step so the caller can re-run it via auto-execute / execute.
+   */
+  retryStep(projectId: string, stepId: string): ProjectStep | null {
+    const project = this.projects.get(projectId);
+    if (!project) return null;
+    const step = project.steps.find(s => s.id === stepId);
+    if (!step) return null;
+    if (step.status === 'completed') {
+      // Allow re-running completed steps too (user wants a different output).
+      // Keep the old result in step.error as a "previous attempt" marker.
+      step.error = `[Previous output preserved on retry]\n${step.result?.substring(0, 500) || ''}`;
+    }
+    step.status = 'pending';
+    step.error = step.error || undefined;
+    step.result = undefined;
+    project.status = 'active';
+    project.updatedAt = new Date().toISOString();
+    this.persistState();
+    return step;
+  }
+
+  /**
+   * Reset the entire project: every failed/active step → pending, project
+   * status → pending. Useful when the user wants to clean-start after a
+   * cluster of failures.
+   *
+   * Optionally deletes step output files from disk. The route handler is
+   * responsible for actually unlinking files; this method only mutates state.
+   *
+   * Returns a summary of which steps were reset.
+   */
+  restartProject(projectId: string, opts: { keepCompleted?: boolean } = {}): {
+    project: Project;
+    reset: string[];
+  } | null {
+    const project = this.projects.get(projectId);
+    if (!project) return null;
+    const reset: string[] = [];
+    for (const step of project.steps) {
+      if (step.status === 'failed' || step.status === 'active') {
+        step.status = 'pending';
+        step.error = undefined;
+        step.result = undefined;
+        reset.push(step.id);
+      } else if (step.status === 'completed' && !opts.keepCompleted) {
+        step.status = 'pending';
+        step.error = undefined;
+        step.result = undefined;
+        reset.push(step.id);
+      }
+    }
+    project.status = reset.length > 0 ? 'pending' : project.status;
+    project.progress = 0;
+    project.updatedAt = new Date().toISOString();
+    this.persistState();
+    return { project, reset };
+  }
+
+  /**
    * Skip a step
    */
   skipStep(projectId: string, stepId: string): ProjectStep | null {

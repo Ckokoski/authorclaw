@@ -76,34 +76,60 @@ const TASK_TIERS: Record<string, TaskTier> = {
 };
 
 // Provider preference order per tier (first available wins)
+// OpenRouter is included but ranked behind dedicated providers because its
+// pricing is opaque (depends on the model the user picks). Users who want
+// OpenRouter as primary should set it as the global preferred provider.
 const TIER_ROUTING: Record<TaskTier, string[]> = {
-  free:    ['gemini', 'ollama', 'deepseek', 'openai', 'claude'],
-  mid:     ['gemini', 'deepseek', 'claude', 'openai', 'ollama'],
-  premium: ['claude', 'openai', 'gemini', 'deepseek', 'ollama'],
+  free:    ['gemini', 'ollama', 'deepseek', 'openrouter', 'openai', 'claude'],
+  mid:     ['gemini', 'deepseek', 'openrouter', 'claude', 'openai', 'ollama'],
+  premium: ['claude', 'openai', 'openrouter', 'gemini', 'deepseek', 'ollama'],
 };
 
 /**
  * Default reasoning effort per task type. Tasks that benefit most from deep
  * thinking get auto-elevated; everything else lets the provider default apply.
  *
- * - 'consistency'   — continuity / cross-chapter checks need careful reasoning
- * - 'final_edit'    — last polish pass; best output quality
- * - 'revision'      — structural / scene-level revision
- * - 'book_bible'    — world consistency tracking
- *
- * Inspired by OpenClaw 2026.4.24/25's per-task thinking budgets.
+ * Note: outline / book_bible / creative_writing intentionally NOT here.
+ * Those tasks are LENGTH-heavy not reasoning-heavy — burning the budget on
+ * hidden CoT just truncates the visible answer. Use TASK_OUTPUT_BUDGET to
+ * give them room instead.
  */
 const TASK_REASONING: Record<string, 'low' | 'medium' | 'high'> = {
   consistency: 'high',
   final_edit:  'high',
   revision:    'medium',
-  book_bible:  'medium',
-  outline:     'medium',
 };
 
 /** Public helper: get the recommended reasoning effort for a task type. */
 export function getRecommendedThinking(taskType: string): 'low' | 'medium' | 'high' | undefined {
   return TASK_REASONING[taskType];
+}
+
+/**
+ * Per-task output token budget. The base provider.maxTokens (typically 4096)
+ * is too small for character profiles, chapter-by-chapter outlines, and
+ * full chapter prose — those tasks need 8K+ tokens to fit a complete answer.
+ *
+ * This was the actual root cause of the user-reported "stuck on character
+ * profiles / chapter outline" failures: the model was producing a complete
+ * answer but getting truncated mid-output, then either falling under the
+ * 50-char threshold or returning a half-baked response that broke pipeline
+ * steps downstream.
+ */
+const TASK_OUTPUT_BUDGET: Record<string, number> = {
+  outline:          16384,  // 20-30 chapter outlines + beats per chapter
+  book_bible:       12288,  // Multi-character profiles + worldbuilding
+  creative_writing: 16384,  // Chapter prose; continuation logic handles overflow
+  revision:         16384,  // Pass notes can be long
+  consistency:      8192,   // Cross-chapter check report
+  final_edit:       8192,   // Final-pass notes
+  research:         8192,   // Research syntheses
+  general:          4096,   // Default
+};
+
+/** Public helper: get the output token budget for a task type. */
+export function getOutputBudget(taskType: string): number {
+  return TASK_OUTPUT_BUDGET[taskType] || 4096;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -148,7 +174,10 @@ export class AIRouter {
           tier: 'free',
           available: true,
           endpoint: this.config.ollama?.endpoint || 'http://localhost:11434',
-          maxTokens: 4096,
+          // Ollama caps depend on the model's context window. 8192 is safe
+          // for most modern instruct models without forcing the user to
+          // tune num_ctx in their Modelfile.
+          maxTokens: 8192,
           costPer1kInput: 0,
           costPer1kOutput: 0,
         });
@@ -181,7 +210,7 @@ export class AIRouter {
         tier: 'cheap',
         available: true,
         endpoint: 'https://api.deepseek.com/v1',
-        maxTokens: 4096,
+        maxTokens: 8192, // DeepSeek-chat supports 8K output tokens
         costPer1kInput: 0.00014,
         costPer1kOutput: 0.00028,
       });
@@ -197,7 +226,9 @@ export class AIRouter {
         tier: 'paid',
         available: true,
         endpoint: 'https://api.anthropic.com/v1',
-        maxTokens: 4096,
+        // Claude Sonnet 4.5 supports up to 64K output tokens. 16K is enough
+        // for chapter prose + reasoning budget without becoming wasteful.
+        maxTokens: 16384,
         costPer1kInput: 0.003,
         costPer1kOutput: 0.015,
       });
@@ -213,9 +244,34 @@ export class AIRouter {
         tier: 'paid',
         available: true,
         endpoint: 'https://api.openai.com/v1',
-        maxTokens: 4096,
+        maxTokens: 16384, // GPT-4o + GPT-4o-mini support 16K output tokens
         costPer1kInput: 0.0025,
         costPer1kOutput: 0.01,
+      });
+    }
+
+    // ── OpenRouter (FLEXIBLE — access dozens of models with one key) ──
+    // Uses OpenAI-compatible API. Model selection lets users swap between
+    // Claude / GPT / Gemini / Llama / Mistral / Qwen / etc. without juggling
+    // separate API keys. Requested by users who want one billing surface.
+    const openrouterKey = await this.vault.get('openrouter_api_key');
+    if (openrouterKey) {
+      this.providers.set('openrouter', {
+        id: 'openrouter',
+        name: 'OpenRouter',
+        model: this.config.openrouter?.model || 'anthropic/claude-sonnet-4-5',
+        // Tier depends on the chosen model — default to 'cheap' since users
+        // typically pick OpenRouter for cost flexibility. Power users can
+        // override per-project.
+        tier: 'cheap',
+        available: true,
+        endpoint: 'https://openrouter.ai/api/v1',
+        maxTokens: 16384,
+        // Cost varies wildly by model. These are placeholder estimates that
+        // assume Claude Sonnet pricing — actual cost is reported by the
+        // OpenRouter usage endpoint. Don't budget against this number.
+        costPer1kInput: 0.003,
+        costPer1kOutput: 0.015,
       });
     }
   }
@@ -353,6 +409,8 @@ export class AIRouter {
         return this.completeClaude(provider, request);
       case 'openai':
         return this.completeOpenAICompatible(provider, request, 'openai_api_key');
+      case 'openrouter':
+        return this.completeOpenAICompatible(provider, request, 'openrouter_api_key');
       default:
         throw new Error(`Unknown provider: ${provider.id}`);
     }
@@ -602,6 +660,12 @@ export class AIRouter {
         // gpt-4o silently ignores it. Send the param only when the model name suggests support.
         const isReasoningModel = /^(o[1-9]|o\d+|gpt-5|gpt-5\.\d+)/i.test(provider.model);
         if (isReasoningModel) reasoningEffort = request.thinking;
+      } else if (provider.id === 'openrouter') {
+        // OpenRouter: thinking support depends on the underlying model. The
+        // safest approach is to pass `reasoning_effort` — OpenRouter forwards
+        // it to providers that support it and silently ignores it elsewhere.
+        // See https://openrouter.ai/docs/use-cases/reasoning-tokens
+        reasoningEffort = request.thinking;
       }
     }
 
@@ -622,14 +686,30 @@ export class AIRouter {
       body.reasoning_effort = reasoningEffort;
     }
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    };
+    // OpenRouter recommends (but doesn't require) HTTP-Referer + X-Title
+    // headers for ranking on their leaderboard. Since AuthorClaw is local-only,
+    // we send a stable referrer string. Harmless for other providers.
+    if (provider.id === 'openrouter') {
+      headers['HTTP-Referer'] = 'https://github.com/Ckokoski/authorclaw';
+      headers['X-Title'] = 'AuthorClaw';
+    }
+
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
+      headers,
       body: JSON.stringify(body),
     });
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '');
+      throw new Error(
+        `${provider.name} HTTP ${response.status}: ${errBody.substring(0, 400) || response.statusText}`
+      );
+    }
 
     const data = await response.json() as any;
     if (data.error) {
@@ -640,6 +720,8 @@ export class AIRouter {
     const usage = data.usage;
     const inputTokens = usage?.prompt_tokens || 0;
     const outputTokens = usage?.completion_tokens || 0;
+    // OpenRouter may not always return usage; fall back to provider's pricing
+    // map (which is approximate for OpenRouter — actual cost varies by model).
     return {
       text,
       tokensUsed: inputTokens + outputTokens,

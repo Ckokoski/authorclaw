@@ -868,6 +868,17 @@ textarea { resize: vertical; min-height: 60px; }
         <p class="hint" style="margin-top:12px;font-size:12px;">Need to load keys from a shared folder (VM / Docker)? <button class="small" id="btnLoadKeysFromFiles" style="font-size:11px;padding:3px 8px;">Load from files</button></p>
       </div>
 
+      <!-- OpenRouter (model selector) — only useful when an OpenRouter key is configured -->
+      <div class="card" id="openrouterCard">
+        <div class="card-title">OpenRouter Model</div>
+        <p class="hint" style="margin-bottom:12px;">If you've added an OpenRouter API key above, pick which model AuthorClaw should use through it. Examples: <code>anthropic/claude-sonnet-4-5</code>, <code>openai/gpt-4o</code>, <code>meta-llama/llama-3.3-70b-instruct</code>, <code>google/gemini-2.5-flash</code>. Full list at <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a>.</p>
+        <div class="form-group">
+          <label>Model slug</label>
+          <input type="text" id="openrouterModel" placeholder="anthropic/claude-sonnet-4-5">
+        </div>
+        <button class="success" id="btnSaveOpenrouter">Save Model</button>
+      </div>
+
       <!-- Local AI (Ollama) — no key needed -->
       <div class="card" id="ollamaCard">
         <div class="card-title">Local AI (Ollama) — free, no key</div>
@@ -899,6 +910,7 @@ textarea { resize: vertical; min-height: 60px; }
             <option value="ollama">Ollama (local, free)</option>
             <option value="gemini">Gemini (free tier)</option>
             <option value="deepseek">DeepSeek (cheap)</option>
+            <option value="openrouter">OpenRouter (one key, any model)</option>
             <option value="claude">Claude (premium)</option>
             <option value="openai">OpenAI GPT (premium)</option>
           </select>
@@ -1184,6 +1196,7 @@ function switchPanel(name) {
     updateQuickStartBanner();
     loadKeys();
     loadOllamaConfig();
+    loadOpenrouterConfig();
     loadGlobalProvider();
     loadResearchDomains();
     loadAutonomousStatus();
@@ -1811,16 +1824,27 @@ function openProjectDetail(id) {
   }
 
   var stepsHtml = '';
+  var hasFailed = false;
   if (project.steps && project.steps.length > 0) {
     project.steps.forEach(function(s, i) {
+      if (s.status === 'failed') hasFailed = true;
+      // Per-step retry button: visible for failed/active/completed steps so users
+      // can re-run without restarting the whole project.
+      var retryBtn = '';
+      if (s.status === 'failed' || s.status === 'active' || s.status === 'completed') {
+        retryBtn = '<button class="small pd-retry-step" data-step-id="' + esc(s.id) + '" data-step-label="' + esc(s.label || '') + '" ' +
+          'style="font-size:10px;padding:3px 8px;margin-left:4px;" ' +
+          'title="Reset this step to pending so it can be re-run">' + (s.status === 'failed' ? 'Retry' : 'Re-run') + '</button>';
+      }
       stepsHtml +=
         '<div class="step-item" data-step-idx="' + i + '">' +
           '<span class="step-dot ' + esc(s.status) + '"></span>' +
           '<div style="flex:1;">' +
             '<div>' + esc(s.label || s.name || 'Step ' + (i+1)) + '</div>' +
-            '<div style="font-size:11px;color:var(--muted);">' + esc(s.status) + (s.error ? ' - ' + esc(s.error.slice(0, 80)) : '') + '</div>' +
+            '<div style="font-size:11px;color:var(--muted);">' + esc(s.status) + (s.error ? ' - ' + esc(s.error.slice(0, 120)) : '') + '</div>' +
           '</div>' +
           '<span class="badge badge-' + esc(s.status) + '" style="font-size:10px;">' + esc(s.status) + '</span>' +
+          retryBtn +
         '</div>' +
         '<div class="step-output" id="stepOutput' + i + '">' + esc(s.output || s.result || 'No output available.') + '</div>';
     });
@@ -1838,6 +1862,19 @@ function openProjectDetail(id) {
     actionsHtml += '<button class="success" id="pdResume">Resume</button> ';
   }
   actionsHtml += '<button id="pdCompile">Compile Files</button> ';
+
+  // Restart options — visible whenever the project has any non-pending state.
+  // Two flavors:
+  //   "Restart Failed Steps" — only resets failed/active steps, keeps completed work
+  //   "Restart Project (clean)" — wipes everything including completed steps and output files
+  var canRestart = project.status !== 'pending' || hasFailed;
+  if (canRestart) {
+    actionsHtml += '<button class="warning" id="pdRestartFailed" title="Reset only failed/active steps to pending. Completed work is kept.">' +
+      'Restart Failed Steps' +
+      (hasFailed ? ' <span style="background:#ef4444;color:white;border-radius:8px;padding:1px 6px;font-size:10px;margin-left:4px;">⚠</span>' : '') +
+      '</button> ';
+    actionsHtml += '<button class="danger" id="pdRestartClean" title="Reset everything to pending and delete all output files. Cannot be undone.">Restart Project (clean)</button> ';
+  }
 
   // "Continue to..." button for completed projects
   if (project.status === 'completed') {
@@ -1872,6 +1909,7 @@ function openProjectDetail(id) {
               '<option value="ollama"' + (project.preferredProvider === 'ollama' ? ' selected' : '') + '>Ollama</option>' +
               '<option value="gemini"' + (project.preferredProvider === 'gemini' ? ' selected' : '') + '>Gemini</option>' +
               '<option value="deepseek"' + (project.preferredProvider === 'deepseek' ? ' selected' : '') + '>DeepSeek</option>' +
+              '<option value="openrouter"' + (project.preferredProvider === 'openrouter' ? ' selected' : '') + '>OpenRouter</option>' +
               '<option value="claude"' + (project.preferredProvider === 'claude' ? ' selected' : '') + '>Claude</option>' +
               '<option value="openai"' + (project.preferredProvider === 'openai' ? ' selected' : '') + '>OpenAI</option>' +
             '</select>' +
@@ -1933,6 +1971,47 @@ function openProjectDetail(id) {
   }
   var pdCompile = detail.querySelector('#pdCompile');
   if (pdCompile) pdCompile.addEventListener('click', function() { compileProject(id); });
+
+  // Per-step retry / re-run buttons
+  detail.querySelectorAll('.pd-retry-step').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var stepId = btn.getAttribute('data-step-id');
+      var stepLabel = btn.getAttribute('data-step-label') || stepId;
+      var deleteFile = confirm('Retry step "' + stepLabel + '"?\n\nClick OK to retry AND delete the previous output file.\nClick Cancel to keep the previous output file (it will be overwritten on retry).');
+      api('POST', '/api/projects/' + id + '/steps/' + stepId + '/retry',
+          { deleteOutputFile: deleteFile }).then(function() {
+        showToast('Step reset to pending. Click Auto-Execute to run it.', 'success');
+        if (currentDetailProject === id) openProjectDetail(id);
+      }).catch(function(e2) { showToast('Retry failed: ' + e2.message, 'error'); });
+    });
+  });
+
+  // Restart Failed Steps — reset failed/active steps to pending, keep completed
+  var pdRestartFailed = detail.querySelector('#pdRestartFailed');
+  if (pdRestartFailed) {
+    pdRestartFailed.addEventListener('click', function() {
+      if (!confirm('Reset all failed and active steps to pending? Completed work will be kept.')) return;
+      api('POST', '/api/projects/' + id + '/restart',
+          { keepCompleted: true, deleteOutputFiles: false }).then(function(data) {
+        showToast('Reset ' + (data.reset?.length || 0) + ' step(s). Click Auto-Execute to continue.', 'success');
+        if (currentDetailProject === id) openProjectDetail(id);
+      }).catch(function(e) { showToast('Restart failed: ' + e.message, 'error'); });
+    });
+  }
+
+  // Restart Project (clean) — full reset including completed steps + delete files
+  var pdRestartClean = detail.querySelector('#pdRestartClean');
+  if (pdRestartClean) {
+    pdRestartClean.addEventListener('click', function() {
+      if (!confirm('Reset EVERY step to pending and DELETE ALL output files?\n\nThis will wipe completed chapters, drafts, and analyses for this project. Cannot be undone.')) return;
+      api('POST', '/api/projects/' + id + '/restart',
+          { keepCompleted: false, deleteOutputFiles: true }).then(function(data) {
+        showToast('Project fully reset. ' + (data.reset?.length || 0) + ' step(s) cleared.', 'info');
+        if (currentDetailProject === id) openProjectDetail(id);
+      }).catch(function(e) { showToast('Restart failed: ' + e.message, 'error'); });
+    });
+  }
 
   // Wire "Continue to..." button
   var pdContinue = detail.querySelector('#pdContinue');
@@ -2541,7 +2620,10 @@ var keyProviders = [
     placeholder: 'tgp_...' },
   { key: 'elevenlabs_api_key', label: 'ElevenLabs (audiobook narration)', tier: 'paid',
     helpUrl: 'https://elevenlabs.io/app/settings/api-keys',
-    placeholder: 'sk_...' }
+    placeholder: 'sk_...' },
+  { key: 'openrouter_api_key', label: 'OpenRouter (one key, dozens of models)', tier: 'flexible',
+    helpUrl: 'https://openrouter.ai/settings/keys',
+    placeholder: 'sk-or-v1-...' }
 ];
 
 function renderKeyProviders() {
@@ -2618,6 +2700,26 @@ if (btnLoadKeysFromFiles) {
       showToast(n > 0 ? 'Loaded ' + n + ' key(s) from shared folder' : (data.error || 'No keys found in shared folder'),
                 n > 0 ? 'success' : 'info');
       loadKeys(); loadStatus();
+    }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+  });
+}
+
+// ── OpenRouter model selection ──
+function loadOpenrouterConfig() {
+  api('GET', '/api/config').then(function(data) {
+    var input = document.getElementById('openrouterModel');
+    if (input) input.value = (data.ai && data.ai.openrouter && data.ai.openrouter.model) || 'anthropic/claude-sonnet-4-5';
+  });
+}
+var btnSaveOpenrouter = document.getElementById('btnSaveOpenrouter');
+if (btnSaveOpenrouter) {
+  btnSaveOpenrouter.addEventListener('click', function() {
+    var model = document.getElementById('openrouterModel').value.trim() || 'anthropic/claude-sonnet-4-5';
+    api('POST', '/api/config/update', { path: 'ai.openrouter.model', value: model }).then(function() {
+      return api('POST', '/api/providers/refresh');
+    }).then(function() {
+      showToast('OpenRouter model set to ' + model, 'success');
+      loadStatus();
     }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
   });
 }

@@ -394,6 +394,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
       'heartbeat.autonomousIntervalMinutes', 'heartbeat.maxAutonomousStepsPerWake',
       'ai.defaultTemperature', 'ai.preferredProvider',
       'ai.ollama.enabled', 'ai.ollama.endpoint', 'ai.ollama.model',
+      'ai.openrouter.model',
       'bridges.telegram.enabled', 'bridges.telegram.pairingEnabled',
     ];
     if (!safePaths.includes(path)) {
@@ -865,6 +866,69 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   });
 
   // Auto-execute ALL steps of a project (fully autonomous mode)
+  // ── Retry a single step (reset failed/completed → pending) ──
+  // Useful when a step failed and the user wants to retry without restarting
+  // the whole project. Optionally deletes the previous output file.
+  app.post('/api/projects/:id/steps/:stepId/retry', async (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) return res.status(503).json({ error: 'Project engine not initialized' });
+    const project = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const step = engine.retryStep(req.params.id, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    // Optionally delete the step's output file so the next run starts clean.
+    if (req.body?.deleteOutputFile) {
+      try {
+        const { unlink } = await import('fs/promises');
+        const { join: jp } = await import('path');
+        const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const projectDir = jp(baseDir, 'workspace', 'projects', projectSlug);
+        const filename = `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+        await unlink(jp(projectDir, filename)).catch(() => {});
+      } catch { /* non-fatal */ }
+    }
+
+    res.json({ step, project: engine.getProject(req.params.id) });
+  });
+
+  // ── Restart the whole project ──
+  // Resets failed/active (and optionally completed) steps to pending so the
+  // user can re-run from a clean state. Optionally deletes all output files.
+  app.post('/api/projects/:id/restart', async (req: Request, res: Response) => {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) return res.status(503).json({ error: 'Project engine not initialized' });
+    const project = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const keepCompleted = !!req.body?.keepCompleted;
+    const result = engine.restartProject(req.params.id, { keepCompleted });
+    if (!result) return res.status(404).json({ error: 'Project not found' });
+
+    if (req.body?.deleteOutputFiles) {
+      try {
+        const { rm } = await import('fs/promises');
+        const { readdirSync, existsSync: ex } = await import('fs');
+        const { join: jp } = await import('path');
+        const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const projectDir = jp(baseDir, 'workspace', 'projects', projectSlug);
+        if (ex(projectDir)) {
+          // Only delete .md files, preserve manuscript / compiled-output / revised files
+          // unless restart is full (no keepCompleted).
+          const files = readdirSync(projectDir);
+          for (const f of files) {
+            if (!f.endsWith('.md')) continue;
+            if (keepCompleted && (f === 'manuscript.md' || f === 'compiled-output.md' || f === 'revised-manuscript.md' || f === 'revision-report.md')) continue;
+            await rm(jp(projectDir, f)).catch(() => {});
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    res.json(result);
+  });
+
   app.post('/api/projects/:id/auto-execute', async (req: Request, res: Response) => {
     const engine = gateway.getProjectEngine?.();
     if (!engine) {

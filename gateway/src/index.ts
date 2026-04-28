@@ -866,17 +866,20 @@ class AuthorClawGateway {
         }));
 
     // ── Call AI ──
-    // Auto-elevate reasoning effort for high-stakes task types (continuity
-    // check, final edit, revision-apply). For Claude/Gemini/DeepSeek-reasoner/
-    // OpenAI o-series this triggers extra hidden thinking; ignored on Ollama
-    // and gpt-4o-class models.
-    const { getRecommendedThinking } = await import('./ai/router.js');
+    // Two task-aware knobs:
+    //  1. thinking — auto-elevate reasoning for consistency/final_edit/revision
+    //  2. maxTokens — give length-heavy tasks (outline/book_bible/writing)
+    //     room to produce a complete answer. Default provider cap is 4096
+    //     which truncates 20-chapter outlines and multi-character bibles.
+    const { getRecommendedThinking, getOutputBudget } = await import('./ai/router.js');
     const thinking = getRecommendedThinking(taskType);
+    const taskMaxTokens = getOutputBudget(taskType);
     try {
       const response = await this.aiRouter.complete({
         provider: provider.id,
         system: systemPrompt,
         messages,
+        maxTokens: taskMaxTokens,
         ...(thinking ? { thinking } : {}),
       });
 
@@ -936,6 +939,7 @@ class AuthorClawGateway {
             provider: fallback.id,
             system: systemPrompt,
             messages,
+            maxTokens: taskMaxTokens,
             ...(thinking ? { thinking } : {}),
           });
           if (!skipHistory) {
