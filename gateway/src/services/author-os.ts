@@ -36,6 +36,7 @@ const TOOL_DIRS: Record<string, string[]> = {
   'book-bible':          ['book-bible', 'Book Bible Engine'],
   'manuscript-autopsy':  ['manuscript-autopsy', 'Manuscript Autopsy'],
   'ai-author-library':   ['ai-author-library', 'AI Author Library'],
+  'creator-asset-suite': ['creator-asset-suite', 'Creator Asset Suite'],
   'format-factory':      ['format-factory', 'Format Factory Pro'],
 };
 
@@ -84,6 +85,100 @@ export class AuthorOSService {
       tool,
       available,
     }));
+  }
+
+  /**
+   * Auto-generate "synthetic" skill metadata from each available Author OS tool.
+   * Returns SkillLoader-compatible records the SkillLoader can register without
+   * requiring the user to write SKILL.md files for every Author OS tool.
+   *
+   * The triggers are derived from the tool name + the names of any prominent
+   * subfolders / files. Each synthetic skill includes a description that
+   * teaches the AI how to USE the tool from the live Author OS folder so it
+   * isn't just a dead trigger word.
+   */
+  async generateSyntheticSkills(): Promise<Array<{
+    name: string;
+    description: string;
+    triggers: string[];
+    permissions: string[];
+    syntheticFromAuthorOS: true;
+  }>> {
+    const skills: Array<{
+      name: string;
+      description: string;
+      triggers: string[];
+      permissions: string[];
+      syntheticFromAuthorOS: true;
+    }> = [];
+
+    const TOOL_TEMPLATES: Record<string, {
+      name: string;
+      description: string;
+      triggers: string[];
+    }> = {
+      'workflow-engine': {
+        name: 'author-os-workflow',
+        description: 'Run an Author OS Workflow Engine template — JSON-defined writing workflows from Author OS',
+        triggers: ['run workflow', 'workflow template', 'author os workflow', 'load template', 'workflow engine'],
+      },
+      'book-bible': {
+        name: 'author-os-book-bible',
+        description: 'Use the Author OS Book Bible Engine for character / world / timeline tracking',
+        triggers: ['book bible', 'world bible', 'character bible', 'author os bible', 'series bible'],
+      },
+      'manuscript-autopsy': {
+        name: 'author-os-autopsy',
+        description: 'Run Author OS Manuscript Autopsy — pacing + structure + craft analysis on a manuscript',
+        triggers: ['manuscript autopsy', 'autopsy', 'analyze my manuscript', 'pacing analysis', 'structure analysis'],
+      },
+      'ai-author-library': {
+        name: 'author-os-library',
+        description: 'Browse the Author OS AI Author Library for prompts, voice markers, and writing references',
+        triggers: ['author library', 'writing prompts', 'voice markers', 'prompt library', 'ai author library'],
+      },
+      'creator-asset-suite': {
+        name: 'author-os-marketing',
+        description: 'Generate marketing assets via the Author OS Creator Asset Suite — blurbs, ads, social posts',
+        triggers: ['creator asset', 'marketing assets', 'asset suite', 'author os marketing', 'launch assets'],
+      },
+      'format-factory': {
+        name: 'author-os-format',
+        description: 'Format manuscripts for KDP / IngramSpark using Format Factory Pro from Author OS',
+        triggers: ['format factory', 'format for kdp', 'format manuscript', 'kdp formatting', 'ingramspark format'],
+      },
+    };
+
+    for (const [toolKey, template] of Object.entries(TOOL_TEMPLATES)) {
+      if (!this.isAvailable(toolKey)) continue;
+
+      let extraTriggers: string[] = [];
+      // Inspect the tool's top-level files for additional trigger words.
+      try {
+        const dir = this.toolDir(toolKey);
+        const entries = await readdir(dir);
+        // Look for distinctive filenames — README.md, primary template names, etc.
+        for (const entry of entries.slice(0, 20)) {
+          const lower = entry.toLowerCase();
+          if (lower.endsWith('.md') || lower.endsWith('.json') || lower.endsWith('.py')) {
+            const stem = lower.replace(/\.(md|json|py)$/, '').replace(/[-_]+/g, ' ').trim();
+            if (stem.length > 4 && stem.length < 30 && !template.triggers.includes(stem)) {
+              extraTriggers.push(stem);
+            }
+          }
+        }
+      } catch { /* directory unreadable — skip extras */ }
+
+      skills.push({
+        name: template.name,
+        description: template.description,
+        triggers: [...template.triggers, ...extraTriggers.slice(0, 5)],
+        permissions: ['file_read', 'memory_read'],
+        syntheticFromAuthorOS: true,
+      });
+    }
+
+    return skills;
   }
 
   // ── Workflow Engine ──────────────────────────────────────

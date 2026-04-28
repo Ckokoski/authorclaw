@@ -253,56 +253,53 @@ class AuthorClawGateway {
     console.log(`  ✓ Skills: ${this.skills.getLoadedCount()} loaded (${this.skills.getAuthorSkillCount()} author-specific${premiumLabel})`);
 
     // ── Phase 6a: Auto-generate SKILLS.txt reference file ──
-    try {
-      const skillsRefPath = join(ROOT_DIR, 'workspace', 'SKILLS.txt');
-      const catalog = this.skills.getSkillCatalog();
-      const byCategory = this.skills.getSkillsByCategory();
-      let refContent = 'AUTHORCLAW SKILLS REFERENCE\n';
-      refContent += `Auto-generated on startup — ${catalog.length} skills loaded\n`;
-      refContent += '═'.repeat(60) + '\n\n';
-
-      for (const category of ['core', 'author', 'marketing', 'premium']) {
-        const skills = byCategory[category];
-        if (!skills || skills.length === 0) continue;
-
-        const label = category.charAt(0).toUpperCase() + category.slice(1);
-        const extra = category === 'premium' ? ' ★' : '';
-        refContent += `── ${label} Skills (${skills.length})${extra} ──\n\n`;
-
-        for (const skill of skills) {
-          const catalogEntry = catalog.find(c => c.name === skill.name);
-          const triggers = catalogEntry?.triggers?.join(', ') || '';
-          refContent += `  ${skill.name}\n`;
-          refContent += `    ${skill.description}\n`;
-          if (triggers) refContent += `    Keywords: ${triggers}\n`;
-          refContent += '\n';
-        }
-      }
-
-      await fs.writeFile(skillsRefPath, refContent, 'utf-8');
-      console.log(`  ✓ SKILLS.txt auto-updated (${catalog.length} skills)`);
-    } catch (e) {
-      console.log(`  ⚠ Failed to update SKILLS.txt: ${e}`);
-    }
+    await this.writeSkillsReference(ROOT_DIR);
 
     // ── Phase 6b: Author OS Tools ──
-    // Check multiple locations: Docker mount, env var, home dir, or relative to project
+    // Author OS is a SEPARATE project (Author Workflow Engine, Book Bible Engine,
+    // Manuscript Autopsy, AI Author Library, Creator Asset Suite, Format Factory Pro).
+    // If you have it installed alongside AuthorClaw, we auto-discover and integrate.
+    // If you don't, AuthorClaw works fine without it — this is purely additive.
     const homeDir = process.env.HOME || process.env.USERPROFILE || '~';
     const authorOSCandidates = [
-      '/app/author-os',                                           // Docker
-      process.env.AUTHOR_OS_PATH || '',                           // Explicit env var
-      join(homeDir, 'author-os'),                                 // ~/author-os (VM)
-      join(ROOT_DIR, '..', 'Author OS'),                          // Sibling to AuthorClaw project
-      join(ROOT_DIR, '..', '..', 'Author OS'),                    // Automations/Author OS/
+      process.env.AUTHOR_OS_PATH || '',                           // Explicit env var (highest priority)
+      '/app/author-os',                                           // Docker mount
+      join(homeDir, 'author-os'),                                 // ~/author-os (Linux/macOS)
+      join(homeDir, 'Author OS'),                                 // ~/Author OS (with space)
+      join(ROOT_DIR, '..', 'Author OS'),                          // Sibling to AuthorClaw
+      join(ROOT_DIR, '..', '..', 'Author OS'),                    // Automations/Author OS/ (Windows default)
+      join(ROOT_DIR, '..', 'author-os'),                          // sibling lowercase
     ].filter(Boolean);
-    const authorOSPath = authorOSCandidates.find(p => existsSync(p)) || authorOSCandidates[2];
+    const authorOSPath = authorOSCandidates.find(p => existsSync(p)) || '';
     this.authorOS = new AuthorOSService(authorOSPath);
-    await this.authorOS.initialize();
-    const osTools = this.authorOS.getAvailableTools();
-    if (osTools.length > 0) {
-      console.log(`  ✓ Author OS: ${osTools.length} tools (${osTools.join(', ')})`);
+    if (authorOSPath) {
+      await this.authorOS.initialize();
+      const osTools = this.authorOS.getAvailableTools();
+      if (osTools.length > 0) {
+        console.log(`  ✓ Author OS: ${osTools.length} tools found at ${authorOSPath}`);
+        console.log(`    (${osTools.join(', ')})`);
+
+        // Auto-generate synthetic skills from Author OS so users don't have to
+        // hand-write SKILL.md files for every tool. The skills become matchable
+        // triggers in handleMessage and show up in the Available Skills system prompt.
+        try {
+          const synthSkills = await this.authorOS.generateSyntheticSkills();
+          const added = this.skills.registerSynthetic(synthSkills);
+          if (added > 0) {
+            console.log(`  ✓ Author OS skills auto-registered: ${added} skill(s) (${synthSkills.map(s => s.name).join(', ')})`);
+            // Refresh SKILLS.txt so the synthetic skills are visible to the AI's prompt context.
+            await this.writeSkillsReference(ROOT_DIR);
+          }
+        } catch (err) {
+          console.warn(`  ⚠ Could not auto-generate Author OS skills: ${(err as Error)?.message || err}`);
+        }
+      } else {
+        console.log(`  ℹ Author OS folder found at ${authorOSPath} but no recognized tools inside.`);
+        console.log(`    Expected subfolders: "Author Workflow Engine", "Book Bible Engine", "Manuscript Autopsy", "AI Author Library".`);
+      }
     } else {
-      console.log('  ⚠ Author OS: no tools found (mount to /app/author-os or ~/author-os)');
+      console.log('  ℹ Author OS: not installed (optional — AuthorClaw works without it).');
+      console.log('    To enable: place the Author OS folder next to AuthorClaw, or set AUTHOR_OS_PATH in .env');
     }
 
     // ── Phase 6c: TTS Service (Piper) — silent init, optional feature ──
@@ -924,6 +921,7 @@ class AuthorClawGateway {
 
       // Try fallback provider
       const fallback = this.aiRouter.getFallbackProvider(provider.id);
+      const primaryErrorText = (error instanceof Error ? error.message : String(error)).substring(0, 250);
       if (fallback) {
         try {
           console.log(`  ↻ Falling back to ${fallback.id}...`);
@@ -940,11 +938,23 @@ class AuthorClawGateway {
             });
           }
           respond(response.text);
-        } catch {
-          respond('I\'m having trouble connecting to my AI providers right now. Please try again in a moment.');
+        } catch (fallbackErr) {
+          const fbText = (fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)).substring(0, 250);
+          // Surface the actual error reasons so users (and the auto-execute path)
+          // know what to fix instead of seeing a generic "trouble connecting" message.
+          respond(
+            `[AI provider failure]\n` +
+            `Primary (${provider.id}): ${primaryErrorText}\n` +
+            `Fallback (${fallback.id}): ${fbText}\n` +
+            `Check API keys in Settings, verify Ollama is running (if used), or switch providers.`
+          );
         }
       } else {
-        respond('I\'m having trouble connecting to my AI providers right now. Please try again in a moment.');
+        respond(
+          `[AI provider failure]\n` +
+          `Provider (${provider.id}): ${primaryErrorText}\n` +
+          `No fallback provider available. Add an API key or start Ollama in Settings.`
+        );
       }
     }
   }
@@ -989,6 +999,41 @@ class AuthorClawGateway {
   /**
    * Build the complete system prompt with soul, memory, skills, and project context
    */
+  /** Write the human-readable SKILLS.txt reference file in workspace/. */
+  private async writeSkillsReference(rootDir: string): Promise<void> {
+    try {
+      const skillsRefPath = join(rootDir, 'workspace', 'SKILLS.txt');
+      const catalog = this.skills.getSkillCatalog();
+      const byCategory = this.skills.getSkillsByCategory();
+      let refContent = 'AUTHORCLAW SKILLS REFERENCE\n';
+      refContent += `Auto-generated on startup — ${catalog.length} skills loaded\n`;
+      refContent += '═'.repeat(60) + '\n\n';
+
+      for (const category of ['core', 'author', 'marketing', 'premium']) {
+        const skills = byCategory[category];
+        if (!skills || skills.length === 0) continue;
+
+        const label = category.charAt(0).toUpperCase() + category.slice(1);
+        const extra = category === 'premium' ? ' ★' : '';
+        refContent += `── ${label} Skills (${skills.length})${extra} ──\n\n`;
+
+        for (const skill of skills) {
+          const catalogEntry = catalog.find(c => c.name === skill.name);
+          const triggers = catalogEntry?.triggers?.join(', ') || '';
+          refContent += `  ${skill.name}\n`;
+          refContent += `    ${skill.description}\n`;
+          if (triggers) refContent += `    Keywords: ${triggers}\n`;
+          refContent += '\n';
+        }
+      }
+
+      await fs.writeFile(skillsRefPath, refContent, 'utf-8');
+      console.log(`  ✓ SKILLS.txt auto-updated (${catalog.length} skills)`);
+    } catch (e) {
+      console.log(`  ⚠ Failed to update SKILLS.txt: ${e}`);
+    }
+  }
+
   private buildSystemPrompt(context: {
     soul: string;
     memories: string;

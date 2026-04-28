@@ -340,26 +340,65 @@ export class AIRouter {
     provider: AIProvider,
     request: CompletionRequest
   ): Promise<CompletionResponse> {
-    const response = await fetch(`${provider.endpoint}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: provider.model,
-        messages: [
-          { role: 'system', content: request.system },
-          ...request.messages,
-        ],
-        stream: false,
-        options: {
-          temperature: request.temperature ?? 0.7,
-          num_predict: request.maxTokens ?? provider.maxTokens,
-        },
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${provider.endpoint}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: provider.model,
+          messages: [
+            { role: 'system', content: request.system },
+            ...request.messages,
+          ],
+          stream: false,
+          options: {
+            temperature: request.temperature ?? 0.7,
+            num_predict: request.maxTokens ?? provider.maxTokens,
+          },
+        }),
+      });
+    } catch (err: any) {
+      // Connection refused / timeout / DNS — surface clearly so callers can fall back.
+      throw new Error(`Ollama unreachable at ${provider.endpoint}: ${err?.message || err}. Is "ollama serve" running?`);
+    }
 
-    const data = await response.json() as any;
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      // Common case: model not pulled. Detect and explain.
+      const lower = body.toLowerCase();
+      if (response.status === 404 || lower.includes('not found') || lower.includes('try pulling')) {
+        throw new Error(`Ollama model "${provider.model}" is not installed. Run: ollama pull ${provider.model}`);
+      }
+      throw new Error(`Ollama error ${response.status}: ${body.substring(0, 300) || response.statusText}`);
+    }
+
+    let data: any;
+    try {
+      data = await response.json();
+    } catch (err: any) {
+      throw new Error(`Ollama returned invalid JSON: ${err?.message || err}`);
+    }
+
+    if (data?.error) {
+      throw new Error(`Ollama error: ${data.error}`);
+    }
+
+    const text = data?.message?.content || '';
+    if (!text || text.trim().length === 0) {
+      // Empty response from Ollama is almost always a model misload, context overflow,
+      // or num_predict exhaustion. Throw so the router falls back to another provider
+      // instead of silently passing an empty string up to the user.
+      throw new Error(
+        `Ollama returned an empty response. ` +
+        `Common causes: context window exceeded for model "${provider.model}", ` +
+        `model still loading, or num_predict too small. ` +
+        `Try a model with a larger context window (e.g., llama3.1:8b-instruct-q4_K_M) or split the task.`
+      );
+    }
+
     return {
-      text: data.message?.content || '',
+      text,
       tokensUsed: (data.prompt_eval_count || 0) + (data.eval_count || 0),
       estimatedCost: 0,
       provider: 'ollama',
@@ -396,7 +435,22 @@ export class AIRouter {
       console.error(`  ✗ Gemini API error: ${data.error.message || JSON.stringify(data.error)}`);
       throw new Error(`Gemini API error: ${data.error.message || 'Unknown error'}`);
     }
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const candidate = data.candidates?.[0];
+    const text = candidate?.content?.parts?.[0]?.text || '';
+    // Detect Gemini blocking the response (safety filter, recitation, language, etc.)
+    // Without this, blocked responses silently came through as empty strings and the
+    // outline / writing step failed with a confusing "too-short response" error.
+    if (!text || text.trim().length === 0) {
+      const finishReason = candidate?.finishReason || data.promptFeedback?.blockReason;
+      if (finishReason && finishReason !== 'STOP') {
+        throw new Error(
+          `Gemini blocked the response (finishReason: ${finishReason}). ` +
+          `This usually happens when prompts mention violence, sexual content, or copyrighted material. ` +
+          `Try rephrasing the project description, or switch to Claude / DeepSeek for creative-writing steps.`
+        );
+      }
+      throw new Error('Gemini returned an empty response. Try again or fall back to another provider.');
+    }
     const usage = data.usageMetadata;
     return {
       text,

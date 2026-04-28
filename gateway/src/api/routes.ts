@@ -821,11 +821,27 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
         );
       }
 
-      if (!response || response.length < 50) {
-        engine.failStep(project.id, activeStep.id, 'Empty or too-short response from AI');
+      // Detect the [AI provider failure] sentinel from handleMessage when both
+      // primary and fallback errored. Treat as failure with the real reason
+      // instead of writing the error message into the manuscript file.
+      if (response && response.startsWith('[AI provider failure]')) {
+        const detail = response.replace(/^\[AI provider failure\]\s*/, '').substring(0, 500);
+        engine.failStep(project.id, activeStep.id, detail);
         return res.json({
           success: false,
-          error: 'AI returned an insufficient response',
+          error: 'AI provider failure — see detail',
+          detail,
+          project: engine.getProject(project.id),
+        });
+      }
+      if (!response || response.length < 50) {
+        const reason = `AI returned an unusably short response (${response?.length ?? 0} chars). ` +
+          `This usually means the chosen provider hit a safety filter, ran out of context, or the model is misconfigured. ` +
+          `Try a different provider in Settings, shorten the project description, or split the task.`;
+        engine.failStep(project.id, activeStep.id, reason);
+        return res.json({
+          success: false,
+          error: reason,
           project: engine.getProject(project.id),
         });
       }
@@ -909,9 +925,18 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
           );
         }
 
+        if (response && response.startsWith('[AI provider failure]')) {
+          const detail = response.replace(/^\[AI provider failure\]\s*/, '').substring(0, 500);
+          engine.failStep(currentProject.id, activeStep.id, detail);
+          results.push({ step: activeStep.label, success: false, error: detail });
+          break;
+        }
         if (!response || response.length < 50) {
-          engine.failStep(currentProject.id, activeStep.id, 'Empty or too-short response from AI');
-          results.push({ step: activeStep.label, success: false, error: 'Insufficient AI response' });
+          const reason = `AI returned an unusably short response (${response?.length ?? 0} chars). ` +
+            `Cause is usually a safety filter trip, context overflow, or misconfigured provider. ` +
+            `Switch providers in Settings or shorten the project description.`;
+          engine.failStep(currentProject.id, activeStep.id, reason);
+          results.push({ step: activeStep.label, success: false, error: reason });
           break;
         }
 

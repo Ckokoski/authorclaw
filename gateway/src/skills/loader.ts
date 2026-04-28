@@ -66,6 +66,35 @@ export class SkillLoader {
     }
   }
 
+  /**
+   * Register synthetic skills generated at runtime — e.g., from Author OS tools.
+   * No SKILL.md file is required; the data is provided directly.
+   * Synthetic skills get category 'author' and are merged into the catalog.
+   */
+  registerSynthetic(skills: Array<{
+    name: string;
+    description: string;
+    triggers: string[];
+    permissions?: string[];
+  }>): number {
+    let added = 0;
+    for (const s of skills) {
+      if (!s.name || !s.description || !Array.isArray(s.triggers) || s.triggers.length === 0) continue;
+      // Don't override an explicitly-authored SKILL.md of the same name.
+      if (this.skills.has(s.name)) continue;
+      this.skills.set(s.name, {
+        name: s.name,
+        description: s.description,
+        category: 'author',
+        triggers: s.triggers,
+        permissions: s.permissions || ['memory_read'],
+        content: `# ${s.name}\n\n${s.description}\n\n_(Auto-generated from Author OS tools.)_`,
+      });
+      added++;
+    }
+    return added;
+  }
+
   private parseSkill(content: string, name: string, category: 'core' | 'author' | 'marketing' | 'premium'): Skill | null {
     // Parse YAML frontmatter
     const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
