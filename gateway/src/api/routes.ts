@@ -3986,6 +3986,85 @@ ${sourceCode.substring(0, 15000)}
 
   // ── Confirmation Gate ──
 
+  // ═══════════════════════════════════════════════════════════
+  // Memory Search (Hermes-inspired FTS5 over conversations + step outputs)
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * GET /api/memory/search?q=<query>&persona=<id>&project=<id>&source=<src>&limit=<n>
+   *   - persona=__active will use the currently-active persona; pass __all to disable filtering.
+   * Returns ranked snippets with FTS5 highlighting.
+   */
+  app.get('/api/memory/search', (req: Request, res: Response) => {
+    const search = services.memorySearch;
+    if (!search) return res.status(503).json({ error: 'Memory search service not initialized' });
+    if (!search.isAvailable()) {
+      const stats = search.getStats();
+      return res.status(503).json({ error: stats.unavailableReason || 'Search unavailable', stats });
+    }
+    const q = String(req.query.q || '').trim();
+    if (!q) return res.json({ hits: [], totalEntries: search.getStats().totalEntries });
+
+    const personaParam = req.query.persona as string | undefined;
+    const personaId = personaParam === '__all' ? undefined
+      : personaParam === '__active' ? services.memory?.getActivePersonaId() ?? undefined
+      : personaParam;
+
+    const projectParam = req.query.project as string | undefined;
+    const projectId = projectParam === '__active'
+      ? services.memory?.getActiveProjectId() ?? undefined
+      : projectParam;
+
+    const hits = search.search(q, {
+      limit: req.query.limit ? Math.min(parseInt(String(req.query.limit), 10) || 25, 100) : 25,
+      source: req.query.source as any,
+      personaId: personaId ?? undefined,
+      projectId,
+      fromDate: req.query.fromDate as any,
+      toDate: req.query.toDate as any,
+    });
+    res.json({ hits, query: q, count: hits.length });
+  });
+
+  app.get('/api/memory/stats', (_req: Request, res: Response) => {
+    const search = services.memorySearch;
+    if (!search) return res.status(503).json({ error: 'Memory search not initialized' });
+    res.json(search.getStats());
+  });
+
+  /** Force a full reindex. Useful after manual edits to conversation files. */
+  app.post('/api/memory/reindex', async (_req: Request, res: Response) => {
+    const search = services.memorySearch;
+    if (!search) return res.status(503).json({ error: 'Memory search not initialized' });
+    if (!search.isAvailable()) return res.status(503).json({ error: 'Memory search unavailable' });
+    try {
+      const result = await search.reindexAll({ force: true });
+      res.json({ ...result, stats: search.getStats() });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Reindex failed' });
+    }
+  });
+
+  // ─── Active Persona (memory tagging) ───
+  // Sets which persona future conversation turns get tagged with so each
+  // pen name maintains its own memory boundary in the search index.
+  app.get('/api/memory/active-persona', (_req: Request, res: Response) => {
+    if (!services.memory) return res.status(503).json({ error: 'Memory not initialized' });
+    res.json({
+      personaId: services.memory.getActivePersonaId(),
+      projectId: services.memory.getActiveProjectId(),
+    });
+  });
+
+  app.post('/api/memory/active-persona', async (req: Request, res: Response) => {
+    if (!services.memory) return res.status(503).json({ error: 'Memory not initialized' });
+    const { personaId } = req.body || {};
+    // null/empty string clears the active persona (= unscoped memory)
+    const value = personaId && typeof personaId === 'string' ? personaId : null;
+    await services.memory.setActivePersona(value);
+    res.json({ personaId: services.memory.getActivePersonaId() });
+  });
+
   // ─── Browser Doctor ───
   // Read-only probe inspired by OpenClaw's `browser doctor` command. Reports
   // whether AuthorClaw can plan browser actions for each major author platform.

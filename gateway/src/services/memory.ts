@@ -18,6 +18,7 @@ export class MemoryService {
   private config: MemoryConfig;
   private conversationSummaries: string[] = [];
   private activeProjectPath: string | null = null;
+  private activePersonaId: string | null = null;
 
   constructor(memoryDir: string, config: Partial<MemoryConfig>) {
     this.memoryDir = memoryDir;
@@ -45,6 +46,34 @@ export class MemoryService {
     if (existsSync(activePath)) {
       this.activeProjectPath = (await readFile(activePath, 'utf-8')).trim();
     }
+
+    // Active persona — every conversation turn is tagged with this so each
+    // pen name maintains its own memory boundary. Persists across restarts.
+    const personaPath = join(this.memoryDir, 'active-persona.txt');
+    if (existsSync(personaPath)) {
+      this.activePersonaId = (await readFile(personaPath, 'utf-8')).trim() || null;
+    }
+  }
+
+  /** Get the persona currently tagging new conversation turns. */
+  getActivePersonaId(): string | null {
+    return this.activePersonaId;
+  }
+
+  /** Get the project currently tagging new conversation turns. */
+  getActiveProjectId(): string | null {
+    return this.activeProjectPath;
+  }
+
+  /**
+   * Switch the active persona. All subsequent conversation turns will be
+   * tagged with this personaId so memory search can filter by pen name.
+   * Pass null to clear (= unscoped / shared memory).
+   */
+  async setActivePersona(personaId: string | null): Promise<void> {
+    this.activePersonaId = personaId;
+    const personaPath = join(this.memoryDir, 'active-persona.txt');
+    await writeFile(personaPath, personaId || '');
   }
 
   async getRelevant(query: string): Promise<string> {
@@ -100,17 +129,57 @@ export class MemoryService {
     return null;
   }
 
-  async process(userMessage: string, assistantResponse: string): Promise<void> {
-    // Store conversation turn
+  /**
+   * Live-index hook — wired by the gateway after construction so memory
+   * turns are FTS-indexed in addition to being persisted to JSONL.
+   */
+  private liveIndexHook: ((entry: {
+    user: string;
+    assistant: string;
+    timestamp: string;
+    personaId?: string | null;
+    projectId?: string | null;
+  }) => void) | null = null;
+
+  setLiveIndexHook(fn: typeof this.liveIndexHook): void {
+    this.liveIndexHook = fn;
+  }
+
+  async process(
+    userMessage: string,
+    assistantResponse: string,
+    context?: { personaId?: string | null; projectId?: string | null }
+  ): Promise<void> {
+    // Store conversation turn. If the caller didn't supply persona/project
+    // context, fall back to the currently-active ones tracked by this service.
     const today = new Date().toISOString().split('T')[0];
+    const timestamp = new Date().toISOString();
     const logPath = join(this.memoryDir, 'conversations', `${today}.jsonl`);
+    const personaId = context?.personaId !== undefined ? context.personaId : this.activePersonaId;
+    const projectId = context?.projectId !== undefined ? context.projectId : this.activeProjectPath;
     const entry = JSON.stringify({
-      timestamp: new Date().toISOString(),
+      timestamp,
       user: userMessage.substring(0, 5000),
       assistant: assistantResponse.substring(0, 5000),
+      // Per-persona / per-project tagging (Hermes-inspired). Lets memory
+      // search filter conversations by pen name and project so each
+      // identity has a clean memory boundary.
+      personaId,
+      projectId,
     }) + '\n';
     const { appendFile } = await import('fs/promises');
     await appendFile(logPath, entry);
+
+    // Live FTS index (no-op if search service unavailable)
+    try {
+      this.liveIndexHook?.({
+        user: userMessage.substring(0, 5000),
+        assistant: assistantResponse.substring(0, 5000),
+        timestamp,
+        personaId,
+        projectId,
+      });
+    } catch { /* search indexing failures should never block memory writes */ }
   }
 
   /** Sanitize a path segment — strip traversal, separators, and null bytes. */

@@ -39,6 +39,7 @@ import { ImageGenService } from './services/image-gen.js';
 import { ProjectEngine } from './services/projects.js';
 import { PersonaService } from './services/personas.js';
 import { ContextEngine } from './services/context-engine.js';
+import { MemorySearchService } from './services/memory-search.js';
 import { LessonStore } from './services/lessons.js';
 import { PreferenceStore } from './services/preferences.js';
 import { OrchestratorService } from './services/orchestrator.js';
@@ -107,6 +108,7 @@ class AuthorClawGateway {
   private personas!: PersonaService;
   private projectEngine!: ProjectEngine;
   private contextEngine!: ContextEngine;
+  private memorySearch!: MemorySearchService;
   private lessons!: LessonStore;
   private preferences!: PreferenceStore;
   private orchestrator!: OrchestratorService;
@@ -215,6 +217,26 @@ class AuthorClawGateway {
     this.memory = new MemoryService(join(ROOT_DIR, 'workspace', 'memory'), this.config.get('memory'));
     await this.memory.initialize();
     console.log('  ✓ Memory system initialized');
+
+    // ── Phase 3b: Memory Search (FTS5 over conversations + project outputs) ──
+    // Hermes-inspired persistent cross-session search. Falls back gracefully
+    // if better-sqlite3 isn't available on this platform.
+    this.memorySearch = new MemorySearchService(join(ROOT_DIR, 'workspace'));
+    await this.memorySearch.initialize();
+    if (this.memorySearch.isAvailable()) {
+      // Wire memory.process() → live FTS indexing
+      this.memory.setLiveIndexHook((entry) => this.memorySearch.indexConversationTurn(entry));
+      // Index any pre-existing data on first boot — incremental on subsequent.
+      try {
+        const result = await this.memorySearch.reindexAll();
+        const stats = this.memorySearch.getStats();
+        console.log(`  ✓ Memory search ready: ${stats.totalEntries} entries indexed (added ${result.indexed}, skipped ${result.skipped})`);
+      } catch (err) {
+        console.warn(`  ⚠ Memory search reindex failed: ${(err as Error)?.message || err}`);
+      }
+    } else {
+      console.log('  ⚠ Memory search unavailable (search will be disabled, rest of AuthorClaw works)');
+    }
 
     // ── Phase 4: AI Providers ──
     const costsConfig = this.config.get('costs') || {};
@@ -1216,6 +1238,7 @@ class AuthorClawGateway {
       tts: this.tts,
       personas: this.personas,
       contextEngine: this.contextEngine,
+      memorySearch: this.memorySearch,
       lessons: this.lessons,
       preferences: this.preferences,
       orchestrator: this.orchestrator,
@@ -1637,6 +1660,58 @@ class AuthorClawGateway {
           }
         }
         return `Unknown voice preset "${args}". Available: ${presets.join(', ')}`;
+      }
+
+      case '/recall':
+      case '/search': {
+        // Cross-session full-text memory search (Hermes-inspired).
+        // Defaults to filtering by the active persona so pen-name boundaries
+        // are respected. Pass --all to search everything.
+        if (!this.memorySearch?.isAvailable()) {
+          const stats = this.memorySearch?.getStats();
+          return `Memory search unavailable. ${stats?.unavailableReason || 'better-sqlite3 not loaded.'}`;
+        }
+        if (!args) {
+          const stats = this.memorySearch.getStats();
+          return `**Memory Search**\n\n${stats.totalEntries.toLocaleString()} entries indexed.\nUsage: \`/recall <query>\` (filters by active persona by default)\nAdd \`--all\` to search across all personas.\nExamples:\n• \`/recall dragon throne\`\n• \`/recall "exact phrase"\`\n• \`/recall character NEAR motivation\``;
+        }
+        const allFlag = / --all\b/.test(args);
+        const query = args.replace(/--all\b/g, '').trim();
+        const personaFilter = allFlag ? undefined : this.memory.getActivePersonaId() || undefined;
+        const hits = this.memorySearch.search(query, {
+          limit: 8,
+          personaId: personaFilter,
+        });
+        if (hits.length === 0) return `No matches for "${query}"${personaFilter ? ` (persona-scoped — try \`--all\`)` : ''}.`;
+        const lines = hits.map((h, i) => {
+          const date = h.timestamp.split('T')[0];
+          const where = h.source === 'conversation' ? 'chat'
+            : h.source === 'manuscript' ? 'manuscript'
+            : h.source === 'project_step' ? 'project step' : h.source;
+          return `${i + 1}. **${h.title || h.sourceRef}** _(${where} · ${date})_\n   ${h.snippet.replace(/\n/g, ' ')}`;
+        });
+        return `**Recalled ${hits.length} match${hits.length === 1 ? '' : 'es'}**${personaFilter ? ` (persona-scoped)` : ''}:\n\n${lines.join('\n\n')}`;
+      }
+
+      case '/persona': {
+        // Set the active persona for memory tagging. Future chat turns get
+        // tagged with this persona so search can filter by pen name.
+        if (!args) {
+          const active = this.memory.getActivePersonaId();
+          const all = this.personas?.list?.() || [];
+          const list = all.map((p: any) => `• \`${p.id || p.penName}\`${active && (p.id === active || p.penName === active) ? ' ✅ (active)' : ''} — ${p.penName} (${p.genre || 'unknown genre'})`).join('\n');
+          return `**Active persona:** ${active ? `\`${active}\`` : '_(unscoped — memory shared across all)_'}\n\n${list || 'No personas yet. Create one in the Personas panel.'}\n\nUsage:\n• \`/persona <id-or-pen-name>\` — switch active persona\n• \`/persona clear\` — unscope (shared memory)`;
+        }
+        if (args.toLowerCase() === 'clear') {
+          await this.memory.setActivePersona(null);
+          return 'Active persona cleared. Future memory entries are unscoped.';
+        }
+        const all = this.personas?.list?.() || [];
+        const match = all.find((p: any) =>
+          p.id === args || p.penName?.toLowerCase() === args.toLowerCase());
+        if (!match) return `Persona "${args}" not found. Try \`/persona\` to list available ones.`;
+        await this.memory.setActivePersona(match.id);
+        return `Active persona set to **${match.penName}** (\`${match.id}\`). Future chat turns will be tagged with this pen name.`;
       }
 
       case '/clean': {
