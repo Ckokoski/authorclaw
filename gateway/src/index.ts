@@ -272,7 +272,21 @@ class AuthorAgentGateway {
     this.app = express();
     this.server = createServer(this.app);
     this.io = new SocketIO(this.server, {
-      cors: { origin: ['http://localhost:3847', 'http://127.0.0.1:3847'] },
+      cors: {
+        origin: (origin, callback) => {
+          if (!origin || this.getAllowedOrigins().includes(origin)) return callback(null, true);
+          callback(new Error('Not allowed by CORS'));
+        },
+      },
+    });
+    // Diagnostic: Engine.IO's own handshake-failure event, fires BEFORE
+    // io.on('connection') for anything rejected during the handshake
+    // (bad origin, transport error, etc.) — otherwise these fail silently.
+    this.io.engine.on('connection_error', (err: any) => {
+      logger.warn(
+        `[websocket] handshake failed: code=${err.code} message="${err.message}" ` +
+        `origin=${err.req?.headers?.origin || 'none'} url=${err.req?.url || 'unknown'}`
+      );
     });
 
     // Security middleware
@@ -283,6 +297,16 @@ class AuthorAgentGateway {
           scriptSrc: ["'self'", "'unsafe-inline'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           connectSrc: ["'self'", "http://localhost:3847", "http://127.0.0.1:3847"],
+          // Helmet's default CSP directive set auto-injects
+          // upgrade-insecure-requests, which makes the browser silently
+          // rewrite every http:// fetch this page makes to https://. Browsers
+          // exempt localhost/127.0.0.1 from that rewrite (they're
+          // "potentially trustworthy" origins) but NOT other addresses like a
+          // Tailscale IP — so with this directive active, every API call from
+          // a non-localhost origin gets rewritten to https:// and fails with
+          // ERR_SSL_PROTOCOL_ERROR against this plain-HTTP server. Explicitly
+          // nulling it out here removes it from the generated header.
+          upgradeInsecureRequests: null,
         },
       },
     }));
@@ -376,6 +400,11 @@ class AuthorAgentGateway {
     if (globalPref) {
       this.aiRouter.setGlobalPreferredProvider(globalPref);
       logger.info(`  ✓ Global preferred provider: ${globalPref}`);
+    }
+    const globalPrefFallback = this.config.get('ai.preferredProviderFallback');
+    if (globalPrefFallback) {
+      this.aiRouter.setGlobalPreferredProviderFallback(globalPrefFallback);
+      logger.info(`  ✓ Preferred provider fallback: ${globalPrefFallback}`);
     }
     const providers = this.aiRouter.getActiveProviders();
     for (const p of providers) {
@@ -1236,15 +1265,32 @@ class AuthorAgentGateway {
     logger.info('');
     logger.info('  ═══════════════════════════════════');
     logger.info('  ✍️  AuthorAgent is ready to write');
-    logger.info(`  📡 Dashboard: http://localhost:${this.config.get('server.port', 3847)}`);
+    logger.info(`  📡 Dashboard: http://${this.config.get('server.host', 'localhost')}:${this.config.get('server.port', 3847)}`);
     logger.info('  ═══════════════════════════════════');
     logger.info('');
+  }
+
+  /**
+   * Origins allowed to talk to the API/WebSocket. Always includes localhost
+   * (dashboard opened directly on this machine); also includes the
+   * configured `server.host`:port when it's been set to something other than
+   * localhost (e.g. a Tailscale IP), so the dashboard still works when
+   * accessed remotely from a non-localhost origin.
+   */
+  private getAllowedOrigins(): string[] {
+    const port = this.config?.get?.('server.port', 3847) ?? 3847;
+    const allowed = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
+    const host = this.config?.get?.('server.host', '127.0.0.1');
+    if (host && host !== '127.0.0.1' && host !== 'localhost') {
+      allowed.push(`http://${host}:${port}`);
+    }
+    return allowed;
   }
 
   private setupWebSocket(): void {
     this.io.on('connection', (socket) => {
       const origin = socket.handshake.headers.origin;
-      const allowed = ['http://localhost:3847', 'http://127.0.0.1:3847'];
+      const allowed = this.getAllowedOrigins();
       if (origin && !allowed.includes(origin)) {
         this.audit.log('security', 'websocket_rejected', { origin });
         socket.disconnect();
@@ -2489,8 +2535,25 @@ class AuthorAgentGateway {
   async start(): Promise<void> {
     await this.initialize();
     const port = this.config.get('server.port', 3847);
-    this.server.listen(port, '127.0.0.1', () => {
-      // Bound to localhost only for security
+    const host = this.config.get('server.host', '127.0.0.1');
+    // Without this handler, a bind failure (port in use, or — since host is
+    // config-driven and can be set to a Tailscale/LAN IP — that interface
+    // dropping or not being up yet at boot) throws as an unhandled 'error'
+    // event and crashes the whole process with no diagnostic in the log
+    // beyond a bare non-zero exit code.
+    this.server.on('error', (err: NodeJS.ErrnoException) => {
+      logger.error(`  ✗ Server failed to bind ${host}:${port}: ${err.code || err.message}`);
+      if (err.code === 'EADDRNOTAVAIL') {
+        logger.error(`    Address ${host} is not currently assigned to any network interface on this machine.`);
+      } else if (err.code === 'EADDRINUSE') {
+        logger.error(`    Port ${port} is already in use — another AuthorAgent instance (or something else) is bound to it.`);
+      }
+      process.exit(1);
+    });
+    this.server.listen(port, host, () => {
+      // Bind address is config-driven (server.host in config/user.json).
+      // Defaults to localhost-only; see getAllowedOrigins() for the matching
+      // CORS/WebSocket origin allowlist when host is set to something else.
     });
   }
 

@@ -5,11 +5,15 @@
  */
 
 import { createHash } from 'crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Vault } from '../security/vault.js';
 import { CostTracker } from '../services/costs.js';
 import { logger } from '../services/logger.js';
 import { getLLMPrice } from '../services/pricing.js';
 import { ModelConfig } from './model-config.js';
+
+const execFileAsync = promisify(execFile);
 
 const log = logger.child('[router]');
 
@@ -166,6 +170,18 @@ const PROVIDER_DEFAULTS: Record<string, ProviderDefault> = {
   claude:     { defaultModel: 'claude-sonnet-4-5-20250929',    tier: 'paid',  costPer1kInput: 0.003,   costPer1kOutput: 0.015 },
   openai:     { defaultModel: 'gpt-4o',                        tier: 'paid',  costPer1kInput: 0.0025,  costPer1kOutput: 0.01 },
   openrouter: { defaultModel: 'anthropic/claude-sonnet-4-5',   tier: 'cheap', costPer1kInput: 0.003,   costPer1kOutput: 0.015 },
+  // Rides a Claude Code CLI session (claude.ai OAuth login, e.g. Pro/Max
+  // subscription) instead of a metered Anthropic API key. No separate
+  // per-token bill, so cost is modeled as free — the CLI's own
+  // total_cost_usd is an internal Anthropic estimate, not something
+  // AuthorAgent gets billed for on top of the subscription.
+  'claude-cli': { defaultModel: 'sonnet',                      tier: 'free',  costPer1kInput: 0,       costPer1kOutput: 0 },
+  // Same CLI session, pinned to the opus alias. Not a separately configured
+  // provider in the settings UI — selectProvider() swaps to this id for the
+  // handful of task types where prose quality matters more than quota
+  // headroom (see CLAUDE_CLI_PREMIUM_TASKS below). Everything else stays on
+  // the sonnet-backed 'claude-cli' id.
+  'claude-cli-opus': { defaultModel: 'opus',                   tier: 'free',  costPer1kInput: 0,       costPer1kOutput: 0 },
 };
 
 /** Known model slugs per provider, for a settings dropdown. Free-text custom
@@ -178,7 +194,85 @@ export const KNOWN_MODELS: Record<string, string[]> = {
   claude:   ['claude-sonnet-4-5-20250929', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-fable-5', 'claude-haiku-4-5'],
   openai:   ['gpt-4o', 'gpt-4o-mini', 'gpt-5', 'gpt-5-mini', 'o3', 'o4-mini'],
   openrouter: ['anthropic/claude-sonnet-4-5', 'anthropic/claude-opus-4-8', 'openai/gpt-4o', 'google/gemini-2.5-pro', 'meta-llama/llama-3.1-70b-instruct'],
+  // CLI accepts aliases (always the latest of each tier) or full model names.
+  'claude-cli': ['sonnet', 'opus', 'haiku', 'fable'],
+  'claude-cli-opus': ['opus'],
 };
+
+/**
+ * Task types that get bumped from the default claude-cli model (sonnet) to
+ * the opus variant when claude-cli is the effective provider. Kept to a
+ * short list deliberately — Opus burns through subscription usage caps
+ * faster than Sonnet, so this is reserved for prose quality (drafting) and
+ * the final polish pass, not every task that happens to route through
+ * claude-cli.
+ */
+const CLAUDE_CLI_PREMIUM_TASKS = new Set(['creative_writing', 'final_edit']);
+
+// ═══════════════════════════════════════════════════════════
+// Claude Code CLI provider helpers
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * A counting semaphore bounding how many `claude -p` child processes can run
+ * at once. Each call spawns a full CLI session (its own auth check, model
+ * session, etc.) — firing a dozen at once both hammers the local machine and
+ * trips Claude Code's own rate limiter, which then fails every in-flight call
+ * simultaneously instead of queueing cleanly. Configured via
+ * config.ai['claude-cli'].maxConcurrent (config/default.json, overridable in
+ * config/user.json — same pattern as ollama.endpoint), default 2.
+ */
+class Semaphore {
+  private queue: Array<() => void> = [];
+  private active = 0;
+
+  constructor(private max: number) {}
+
+  setMax(max: number): void {
+    this.max = max;
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.active >= this.max) {
+      await new Promise<void>(resolve => this.queue.push(resolve));
+    }
+    this.active++;
+    try {
+      return await fn();
+    } finally {
+      this.active--;
+      const next = this.queue.shift();
+      if (next) next();
+    }
+  }
+}
+
+/**
+ * The CLI's `--output-format json` shape isn't a versioned public contract —
+ * it's whatever the current `claude` build happens to emit. Pinning a
+ * known-good minimum version means a schema change surfaces as a clear
+ * "please update" error instead of a silent parse failure mid-pipeline.
+ * Bump after manually verifying `claude -p "hi" --output-format json` still
+ * returns the `{ result, usage: { input_tokens, output_tokens } }` shape
+ * this adapter expects.
+ */
+const MIN_CLAUDE_CLI_VERSION = '2.0.0';
+
+function parseSemver(v: string): [number, number, number] | null {
+  const m = v.trim().match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function versionAtLeast(actual: string, min: string): boolean {
+  const a = parseSemver(actual);
+  const b = parseSemver(min);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i];
+  }
+  return true;
+}
 
 // ═══════════════════════════════════════════════════════════
 // AI Router
@@ -190,6 +284,10 @@ export class AIRouter {
   private vault: Vault;
   private costs: CostTracker;
   private globalPreferredProvider: string | null = null;
+  // Tried when globalPreferredProvider (or a per-call preferredId) is
+  // configured but currently unavailable — e.g. "try openai, and if it's not
+  // reachable, use claude-cli" instead of silently dropping to tier routing.
+  private globalPreferredProviderFallback: string | null = null;
   private modelConfig: ModelConfig | null = null;
 
   // ── Prompt Cache ──
@@ -199,6 +297,12 @@ export class AIRouter {
   private cacheHits = 0;
   private cacheMisses = 0;
   private savedTokens = 0;
+
+  // ── Claude Code CLI provider state ──
+  // Concurrency cap: config.ai['claude-cli'].maxConcurrent, default 2. Read
+  // again in initialize() in case config was reloaded/reinitialized.
+  private claudeCliSemaphore = new Semaphore(2);
+  private claudeCliVersion: string | null = null;
 
   constructor(config: any, vault: Vault, costs: CostTracker, workspaceDir?: string) {
     this.config = config;
@@ -210,6 +314,7 @@ export class AIRouter {
     if (workspaceDir) {
       this.modelConfig = new ModelConfig(workspaceDir);
     }
+    this.claudeCliSemaphore.setMax(this.config?.['claude-cli']?.maxConcurrent ?? 2);
   }
 
   /**
@@ -332,13 +437,32 @@ export class AIRouter {
     if (openaiKey) {
       const model = this.resolveModel('openai', PROVIDER_DEFAULTS.openai.defaultModel);
       const price = this.priceFor('openai', model);
+      const endpoint = this.config.openai?.endpoint || 'https://api.openai.com/v1';
+      // Custom/local endpoints (LM Studio, vLLM, llama.cpp server, etc.) can
+      // be offline without any config change — e.g. LM Studio simply not
+      // running. Probe reachability the same way checkOllama() does, so
+      // `available` reflects reality and selectProvider()'s preferred-
+      // fallback swap can act immediately instead of only after a slow
+      // connection-timeout failure on a live call. Skipped for the default
+      // api.openai.com endpoint — that's Anthropic-grade infra, not worth
+      // an extra startup round-trip to probe.
+      let reachable = true;
+      if (this.config.openai?.endpoint) {
+        reachable = await this.checkOpenAICompatible(endpoint);
+        if (!reachable) {
+          log.warn(`openai endpoint ${endpoint} not reachable at startup — marking unavailable until next reinitialize`);
+        }
+      }
       this.providers.set('openai', {
         id: 'openai',
         name: 'OpenAI GPT',
         model,
         tier: 'paid',
-        available: true,
-        endpoint: 'https://api.openai.com/v1',
+        available: reachable,
+        // Configurable so this provider slot can also point at any
+        // OpenAI-compatible local server (LM Studio, vLLM, llama.cpp server,
+        // text-generation-webui, etc.) — same override pattern as Ollama above.
+        endpoint,
         maxTokens: 16384, // GPT-4o + GPT-4o-mini support 16K output tokens
         costPer1kInput: price.costPer1kInput,
         costPer1kOutput: price.costPer1kOutput,
@@ -372,6 +496,95 @@ export class AIRouter {
         costPer1kOutput: price.costPer1kOutput,
       });
     }
+
+    // ── Claude Code CLI (FREE — rides your claude.ai subscription login) ──
+    // Opt-in: off by default since it depends on a local CLI + interactive
+    // login rather than a portable API key. Enable with
+    // config.ai['claude-cli'].enabled = true once `claude login` has been run.
+    if (this.config['claude-cli']?.enabled === true) {
+      // Re-read maxConcurrent in case config changed since construction
+      // (reinitialize() runs this again without recreating the router).
+      this.claudeCliSemaphore.setMax(this.config['claude-cli']?.maxConcurrent ?? 2);
+
+      const probe = await this.checkClaudeCLI();
+      if (probe.available) {
+        const model = this.resolveModel('claude-cli', PROVIDER_DEFAULTS['claude-cli'].defaultModel);
+        this.providers.set('claude-cli', {
+          id: 'claude-cli',
+          name: 'Claude Code (subscription)',
+          model,
+          tier: 'free',
+          available: true,
+          endpoint: 'local-cli',
+          maxTokens: 16384,
+          costPer1kInput: 0,
+          costPer1kOutput: 0,
+        });
+
+        // Opus variant — same CLI session, model pinned to 'opus'. Registered
+        // whenever the base claude-cli probe succeeds; selectProvider() is
+        // what decides whether a given task actually gets routed here.
+        const opusModel = this.resolveModel('claude-cli-opus', PROVIDER_DEFAULTS['claude-cli-opus'].defaultModel);
+        this.providers.set('claude-cli-opus', {
+          id: 'claude-cli-opus',
+          name: 'Claude Code (subscription, opus)',
+          model: opusModel,
+          tier: 'free',
+          available: true,
+          endpoint: 'local-cli',
+          maxTokens: 16384,
+          costPer1kInput: 0,
+          costPer1kOutput: 0,
+        });
+      } else {
+        log.warn(`claude-cli unavailable: ${probe.reason}`);
+      }
+    }
+  }
+
+  /**
+   * Probe the local Claude Code CLI: installed, new enough, and logged in.
+   * Mirrors checkOllama()'s "reachable or not" pattern but with richer
+   * diagnostics since failures here are usually one-time setup issues
+   * (install / update / login) rather than transient network blips.
+   */
+  private async checkClaudeCLI(): Promise<{ available: boolean; version?: string; reason?: string }> {
+    let version: string;
+    try {
+      const { stdout } = await execFileAsync('claude', ['--version'], { timeout: 10_000 });
+      version = stdout.trim();
+      this.claudeCliVersion = version;
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        return { available: false, reason: 'Claude Code CLI not found on PATH. Install it first.' };
+      }
+      return { available: false, reason: `Claude Code CLI check failed: ${err?.message || err}` };
+    }
+
+    if (!versionAtLeast(version, MIN_CLAUDE_CLI_VERSION)) {
+      return {
+        available: false,
+        version,
+        reason: `Claude Code CLI ${version} is older than the minimum tested version ` +
+                 `${MIN_CLAUDE_CLI_VERSION}. Run "claude update" before enabling this provider.`,
+      };
+    }
+
+    try {
+      const { stdout } = await execFileAsync('claude', ['auth', 'status'], { timeout: 10_000 });
+      const status = JSON.parse(stdout);
+      if (!status?.loggedIn) {
+        return { available: false, version, reason: 'Claude Code CLI is installed but not logged in. Run "claude login".' };
+      }
+    } catch (err: any) {
+      return {
+        available: false,
+        version,
+        reason: `Could not confirm Claude Code CLI login status: ${err?.message || err}. Run "claude login".`,
+      };
+    }
+
+    return { available: true, version };
   }
 
   /**
@@ -462,6 +675,22 @@ export class AIRouter {
   }
 
   /**
+   * Reachability probe for a custom OpenAI-compatible endpoint (LM Studio,
+   * vLLM, etc.) — GET /models is the de facto standard health-check route
+   * across these servers. Same 3s-timeout pattern as checkOllama().
+   */
+  private async checkOpenAICompatible(endpoint: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${endpoint}/models`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Set or clear the global preferred provider.
    * When set, this provider is tried first for ALL tasks before tier routing.
    */
@@ -474,14 +703,48 @@ export class AIRouter {
   }
 
   /**
+   * Set (or clear) the fallback provider used when the primary preference
+   * (global or per-call) is configured but not currently available.
+   */
+  setGlobalPreferredProviderFallback(providerId: string | null): void {
+    this.globalPreferredProviderFallback = providerId;
+  }
+
+  getGlobalPreferredProviderFallback(): string | null {
+    return this.globalPreferredProviderFallback;
+  }
+
+  /**
    * Select the best provider for a given task type using tiered routing.
-   * Priority: per-project override → global preference → tier routing.
-   * When a preferred provider is set, it is ALWAYS used if available,
-   * regardless of task tier.
+   * Priority: per-project override → global preference → preferred fallback
+   * → tier routing. When a preferred provider is set, it is ALWAYS used if
+   * available, regardless of task tier.
    */
   selectProvider(taskType: string, preferredId?: string): AIProvider {
     // Resolve effective preference: per-project > global
-    const effectivePref = preferredId || this.globalPreferredProvider;
+    let effectivePref = preferredId || this.globalPreferredProvider;
+
+    // Preferred-provider fallback: the primary preference is configured but
+    // not currently reachable (server down, no key, CLI not logged in) —
+    // e.g. "try openai, and if it's not available, use claude-cli" instead
+    // of silently dropping straight to tier routing.
+    if (effectivePref && !this.providers.get(effectivePref)?.available &&
+        this.globalPreferredProviderFallback && this.globalPreferredProviderFallback !== effectivePref) {
+      log.warn(`Preferred provider '${effectivePref}' not available, using configured fallback '${this.globalPreferredProviderFallback}'`);
+      effectivePref = this.globalPreferredProviderFallback;
+    }
+
+    // claude-cli premium-task bump: when claude-cli is the effective
+    // preference and this task is prose-quality-sensitive (drafting, final
+    // polish), swap to the opus-pinned variant if it's available. Falls
+    // through to plain claude-cli (sonnet) otherwise — this only ever
+    // affects users who've explicitly set claude-cli as their provider.
+    if (effectivePref === 'claude-cli' && CLAUDE_CLI_PREMIUM_TASKS.has(taskType)) {
+      const opus = this.providers.get('claude-cli-opus');
+      if (opus?.available) {
+        effectivePref = 'claude-cli-opus';
+      }
+    }
 
     if (effectivePref) {
       const pref = this.providers.get(effectivePref);
@@ -519,11 +782,22 @@ export class AIRouter {
   }
 
   /**
-   * Get fallback provider if primary fails.
+   * Get fallback provider if primary fails (live call error, not just
+   * unavailable-at-selection-time — see selectProvider() for that case).
    * Respects the budget cap — skips paid providers when the user is over budget,
    * preferring free providers (Ollama, Gemini free tier) instead.
    */
   getFallbackProvider(currentId: string): AIProvider | null {
+    // Explicit preferred fallback takes priority over the generic free/paid
+    // heuristic below — e.g. "openai's live call just failed, go straight to
+    // claude-cli" instead of whatever happens to be first by insertion order.
+    if (this.globalPreferredProviderFallback && this.globalPreferredProviderFallback !== currentId) {
+      const configured = this.providers.get(this.globalPreferredProviderFallback);
+      if (configured?.available) {
+        return configured;
+      }
+    }
+
     const overBudget = this.costs?.isOverBudget?.() ?? false;
     // Prefer free providers first so we don't silently burn budget on fallback.
     const freeProviders: AIProvider[] = [];
@@ -571,6 +845,9 @@ export class AIRouter {
         return this.completeOpenAICompatible(provider, request, 'deepseek_api_key');
       case 'claude':
         return this.completeClaude(provider, request);
+      case 'claude-cli':
+      case 'claude-cli-opus':
+        return this.completeClaudeCode(provider, request);
       case 'openai':
         return this.completeOpenAICompatible(provider, request, 'openai_api_key');
       case 'openrouter':
@@ -798,6 +1075,123 @@ export class AIRouter {
       estimatedCost: (inputTokens / 1000) * provider.costPer1kInput +
                      (outputTokens / 1000) * provider.costPer1kOutput,
       provider: 'claude',
+    };
+  }
+
+  // ── Claude Code CLI (subscription-backed, no metered API key) ──
+  //
+  // CAVEATS:
+  //  - Claude Code's rate limits/usage caps are tuned for interactive coding
+  //    sessions, not a pipeline firing 20-30 chapter-length calls per book.
+  //    Keep maxConcurrent low (config.ai['claude-cli'].maxConcurrent) and
+  //    expect throttling on long "Full Book" runs.
+  //  - Single-shot only: `claude -p` isn't a multi-turn chat API, so the
+  //    message history below is flattened into one prompt.
+  //  - No thinking-budget passthrough — Claude Code manages its own
+  //    reasoning internally; request.thinking is accepted but ignored here.
+  private async completeClaudeCode(
+    provider: AIProvider,
+    request: CompletionRequest
+  ): Promise<CompletionResponse> {
+    return this.claudeCliSemaphore.run(() => this.runClaudeCliOnce(provider, request));
+  }
+
+  private async runClaudeCliOnce(
+    provider: AIProvider,
+    request: CompletionRequest
+  ): Promise<CompletionResponse> {
+    const transcript = request.messages
+      .map(m => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
+      .join('\n\n');
+    const prompt = `${request.system}\n\n${transcript}`;
+
+    // Output-heavy tasks (full chapter drafts, 20-30 chapter outlines — up to
+    // TASK_OUTPUT_BUDGET's 16384 tokens) can genuinely take longer than a
+    // flat 120s to stream through the CLI wrapper, especially on opus. This
+    // was the actual root cause of "Claude Code CLI call timed out after
+    // 120s" on otherwise-healthy accounts: not a hang, just not enough time.
+    // Configurable via config.ai['claude-cli'].timeoutMs (default 300s).
+    const timeoutMs = this.config?.['claude-cli']?.timeoutMs ?? 300_000;
+
+    let stdout: string;
+    try {
+      // execFile (not exec/shell) — no shell interpolation. The prompt is
+      // NOT passed as an argv element: AuthorAgent's system prompt (soul +
+      // memory + context) routinely runs many KB, and on Windows the CLI is
+      // invoked through a shim whose effective command-line length caps out
+      // around 8K chars — a long prompt-as-argument blows past that and
+      // fails with "spawn ENAMETOOLONG" before the process even starts.
+      // Piping the prompt over stdin instead sidesteps the OS command-line
+      // limit entirely (verified against a 20K-char prompt).
+      const child = execFileAsync(
+        'claude',
+        ['-p', '--output-format', 'json', '--model', provider.model],
+        { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }
+      );
+      child.child.stdin!.end(prompt);
+      const result = await child;
+      stdout = result.stdout;
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        throw new Error(`Claude Code CLI not found. Install it and run "claude login".`);
+      }
+      if (err?.code === 'ENAMETOOLONG') {
+        throw new Error(`Claude Code CLI error: prompt too long even for stdin. This shouldn't happen — please report it.`);
+      }
+      if (err?.killed || err?.signal === 'SIGTERM') {
+        throw new Error(`Claude Code CLI call timed out after ${Math.round(timeoutMs / 1000)}s.`);
+      }
+      const stderr = String(err?.stderr || '').toLowerCase();
+      if (stderr.includes('not logged in') || stderr.includes('authentication')) {
+        throw new Error(`Claude Code CLI is not authenticated. Run "claude login" first.`);
+      }
+      throw new Error(`Claude Code CLI error: ${err?.stderr || err?.message || err}`);
+    }
+
+    // ── Parse, with a fallback for schema drift ──
+    // Preferred path: --output-format json gives { result, usage }. Fallback:
+    // if JSON.parse fails (CLI version mismatch, a stray status line before
+    // the JSON blob, or a future format change), scan for the last
+    // JSON-looking blob; if that also fails, fall back to raw stdout as
+    // plain text rather than failing the whole call outright.
+    let text: string;
+    let usage: { input_tokens?: number; output_tokens?: number } | undefined;
+
+    try {
+      const data = JSON.parse(stdout);
+      text = data?.result ?? data?.text ?? '';
+      usage = data?.usage;
+      if (!text) throw new Error('parsed JSON had no result/text field');
+    } catch {
+      const lastBrace = stdout.lastIndexOf('{');
+      if (lastBrace >= 0) {
+        try {
+          const data = JSON.parse(stdout.slice(lastBrace));
+          text = data?.result ?? data?.text ?? '';
+          usage = data?.usage;
+        } catch {
+          text = stdout.trim();
+        }
+      } else {
+        text = stdout.trim();
+      }
+
+      if (!text) {
+        throw new Error(
+          `Claude Code CLI output didn't match the expected JSON shape and had no ` +
+          `usable fallback text. CLI version: ${this.claudeCliVersion ?? 'unknown'}. ` +
+          `Raw output (truncated): ${stdout.slice(0, 300)}`
+        );
+      }
+    }
+
+    return {
+      text,
+      tokensUsed: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
+      // Rides the subscription — no separate metered cost to the user, even
+      // though the CLI's own JSON includes an internal total_cost_usd estimate.
+      estimatedCost: 0,
+      provider: provider.id, // 'claude-cli' or 'claude-cli-opus'
     };
   }
 

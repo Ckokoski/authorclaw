@@ -9,6 +9,7 @@
   },
   "ai": {
     "preferredProvider": null,
+    "preferredProviderFallback": null,
     "preferredImageProvider": null,
     "maxHistoryMessages": 20,
     "defaultTemperature": 0.7,
@@ -31,6 +32,12 @@
     },
     "openrouter": {
       "model": "anthropic/claude-sonnet-4-5"
+    },
+    "claude-cli": {
+      "enabled": false,
+      "model": "sonnet",
+      "maxConcurrent": 2,
+      "timeoutMs": 300000
     }
   },
   "memory": {

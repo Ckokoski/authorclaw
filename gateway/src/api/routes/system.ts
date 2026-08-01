@@ -433,8 +433,9 @@ export function registerSystemRoutes(ctx: ApiContext): void {
       'heartbeat.enableReminders', 'heartbeat.quietHoursStart',
       'heartbeat.quietHoursEnd', 'heartbeat.autonomousEnabled',
       'heartbeat.autonomousIntervalMinutes', 'heartbeat.maxAutonomousStepsPerWake',
-      'ai.defaultTemperature', 'ai.preferredProvider', 'ai.preferredImageProvider',
+      'ai.defaultTemperature', 'ai.preferredProvider', 'ai.preferredProviderFallback', 'ai.preferredImageProvider',
       'ai.ollama.enabled', 'ai.ollama.endpoint', 'ai.ollama.model',
+      'ai.openai.endpoint', 'ai.openai.model',
       'ai.openrouter.model',
       'bridges.telegram.enabled', 'bridges.telegram.pairingEnabled',
     ];
@@ -448,6 +449,9 @@ export function registerSystemRoutes(ctx: ApiContext): void {
       // Sync global provider preference to router
       if (path === 'ai.preferredProvider') {
         services.aiRouter.setGlobalPreferredProvider(value || null);
+      }
+      if (path === 'ai.preferredProviderFallback') {
+        services.aiRouter.setGlobalPreferredProviderFallback(value || null);
       }
       res.json({ success: true, path, value });
     } catch (err: any) {
