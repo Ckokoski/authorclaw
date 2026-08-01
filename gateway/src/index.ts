@@ -15,7 +15,7 @@ import { Server as SocketIO } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 
@@ -99,6 +99,15 @@ const __dirname = dirname(__filename);
 const ROOT_DIR = __dirname.includes('dist')
   ? join(__dirname, '..', '..', '..')
   : join(__dirname, '..', '..');
+
+// Where all live project data (book bible, chapters, memory, audit logs,
+// etc.) is stored. Defaults to <ROOT_DIR>/workspace as before; overridable
+// via AUTHORCLAW_WORKSPACE_DIR so this data can live somewhere other than
+// inside the AuthorAgent install itself — e.g. a separate git-tracked repo,
+// so manuscript history is decoupled from the tool's own version history.
+const WORKSPACE_DIR = process.env.AUTHORCLAW_WORKSPACE_DIR
+  ? resolve(process.env.AUTHORCLAW_WORKSPACE_DIR)
+  : join(ROOT_DIR, 'workspace');
 
 // ═══════════════════════════════════════════════════════════
 // AuthorAgent Gateway
@@ -342,34 +351,34 @@ class AuthorAgentGateway {
     this.permissions = new PermissionManager(this.config.get('security.permissionPreset', 'standard'));
     logger.info(`  ✓ Permissions: ${this.permissions.preset} mode`);
 
-    this.audit = new AuditLog(join(ROOT_DIR, 'workspace', '.audit'));
+    this.audit = new AuditLog(join(WORKSPACE_DIR, '.audit'));
     await this.audit.initialize();
     logger.info('  ✓ Audit logging active');
 
-    this.sandbox = new SandboxGuard(join(ROOT_DIR, 'workspace'));
+    this.sandbox = new SandboxGuard(WORKSPACE_DIR);
     logger.info('  ✓ Sandbox: workspace-only file access');
 
     this.injectionDetector = new InjectionDetector();
     logger.info('  ✓ Prompt injection detection active');
 
     // ── Phase 2b: Activity Log ──
-    this.activityLog = new ActivityLog(join(ROOT_DIR, 'workspace'));
+    this.activityLog = new ActivityLog(WORKSPACE_DIR);
     await this.activityLog.initialize();
     logger.info('  ✓ Activity log initialized');
 
     // ── Phase 3: Soul & Memory ──
-    this.soul = new SoulService(join(ROOT_DIR, 'workspace', 'soul'));
+    this.soul = new SoulService(join(WORKSPACE_DIR, 'soul'));
     await this.soul.load();
     logger.info(`  ✓ Soul loaded: "${this.soul.getName()}"`);
 
-    this.memory = new MemoryService(join(ROOT_DIR, 'workspace', 'memory'), this.config.get('memory'));
+    this.memory = new MemoryService(join(WORKSPACE_DIR, 'memory'), this.config.get('memory'));
     await this.memory.initialize();
     logger.info('  ✓ Memory system initialized');
 
     // ── Phase 3b: Memory Search (FTS5 over conversations + project outputs) ──
     // Hermes-inspired persistent cross-session search. Falls back gracefully
     // if better-sqlite3 isn't available on this platform.
-    this.memorySearch = new MemorySearchService(join(ROOT_DIR, 'workspace'));
+    this.memorySearch = new MemorySearchService(WORKSPACE_DIR);
     await this.memorySearch.initialize();
     if (this.memorySearch.isAvailable()) {
       // Wire memory.process() → live FTS indexing
@@ -388,12 +397,12 @@ class AuthorAgentGateway {
 
     // ── Phase 4: AI Providers ──
     const costsConfig = this.config.get('costs') || {};
-    costsConfig.persistPath = join(ROOT_DIR, 'workspace', 'costs.json');
+    costsConfig.persistPath = join(WORKSPACE_DIR, 'costs.json');
     this.costs = new CostTracker(costsConfig);
     await this.costs.initialize();
     logger.info(`  ✓ Budget: $${this.costs.dailyLimit}/day, $${this.costs.monthlyLimit}/month (persisted)`);
 
-    this.aiRouter = new AIRouter(this.config.get('ai'), this.vault, this.costs, join(ROOT_DIR, 'workspace'));
+    this.aiRouter = new AIRouter(this.config.get('ai'), this.vault, this.costs, WORKSPACE_DIR);
     await this.aiRouter.initialize();
     // Load global preferred provider from config
     const globalPref = this.config.get('ai.preferredProvider');
@@ -421,7 +430,7 @@ class AuthorAgentGateway {
     logger.info(`  ✓ Research gate: ${this.research.getAllowedDomainCount()} approved domains`);
 
     // ── Phase 6: Skills ──
-    this.skills = new SkillLoader(join(ROOT_DIR, 'skills'), this.permissions, join(ROOT_DIR, 'workspace'));
+    this.skills = new SkillLoader(join(ROOT_DIR, 'skills'), this.permissions, WORKSPACE_DIR);
     await this.skills.loadAll();
     const premiumCount = this.skills.getPremiumSkillCount();
     const premiumLabel = premiumCount > 0 ? `, ${premiumCount} premium ★` : '';
@@ -478,15 +487,15 @@ class AuthorAgentGateway {
     }
 
     // ── Phase 6c: TTS Service (Piper) — silent init, optional feature ──
-    this.tts = new TTSService(join(ROOT_DIR, 'workspace'), this.vault);
+    this.tts = new TTSService(WORKSPACE_DIR, this.vault);
     await this.tts.initialize();
 
     // ── Phase 6c2: Image Generation Service ──
-    this.imageGen = new ImageGenService(join(ROOT_DIR, 'workspace'), this.vault);
+    this.imageGen = new ImageGenService(WORKSPACE_DIR, this.vault);
     await this.imageGen.initialize();
 
     // ── Phase 6d: Author Personas ──
-    this.personas = new PersonaService(join(ROOT_DIR, 'workspace'));
+    this.personas = new PersonaService(WORKSPACE_DIR);
     await this.personas.initialize();
     logger.info(`  ✓ Personas: ${this.personas.getCount()} author persona(s) loaded`);
 
@@ -501,7 +510,7 @@ class AuthorAgentGateway {
     logger.info(`  ✓ Project engine: ${templates.length} templates + dynamic AI planning`);
 
     // ── Phase 6f: Context Engine ──
-    this.contextEngine = new ContextEngine(join(ROOT_DIR, 'workspace'));
+    this.contextEngine = new ContextEngine(WORKSPACE_DIR);
     this.projectEngine.setContextEngine(this.contextEngine);
     logger.info('  ✓ Context Engine: manuscript memory + continuity checking');
 
@@ -513,7 +522,7 @@ class AuthorAgentGateway {
     this.memoryTier = new MemoryTierService(
       this.contextEngine,
       this.memorySearch?.isAvailable() ? this.memorySearch : null,
-      join(ROOT_DIR, 'workspace'),
+      WORKSPACE_DIR,
     );
     this.projectEngine.setMemoryTier(this.memoryTier);
     logger.info(`  ✓ Memory tier: CORE budgeting + ARCHIVAL search (${this.memorySearch?.isAvailable() ? 'search on' : 'search off'})`);
@@ -529,11 +538,11 @@ class AuthorAgentGateway {
     );
 
     // ── Phase 6g: Lessons & Preferences (from Sneakers) ──
-    this.lessons = new LessonStore(join(ROOT_DIR, 'workspace', 'memory'));
+    this.lessons = new LessonStore(join(WORKSPACE_DIR, 'memory'));
     await this.lessons.initialize();
     logger.info(`  ✓ Lessons: ${this.lessons.getAll().length} learned`);
 
-    this.preferences = new PreferenceStore(join(ROOT_DIR, 'workspace', 'memory'));
+    this.preferences = new PreferenceStore(join(WORKSPACE_DIR, 'memory'));
     await this.preferences.initialize();
     const prefCount = Object.keys(this.preferences.getAll()).length;
     logger.info(`  ✓ Preferences: ${prefCount} tracked`);
@@ -541,7 +550,7 @@ class AuthorAgentGateway {
     // ── Phase 6g2: User Model (Honcho-style dialectic, simplified) ──
     // Tracks behavioral observations + per-persona breakdown + periodically
     // consolidates them into an LLM-generated narrative profile.
-    this.userModel = new UserModelService(join(ROOT_DIR, 'workspace'));
+    this.userModel = new UserModelService(WORKSPACE_DIR);
     this.userModel.setAI(
       (req) => this.aiRouter.complete(req),
       (taskType: string) => this.aiRouter.selectProvider(taskType),
@@ -551,7 +560,7 @@ class AuthorAgentGateway {
     logger.info(`  ✓ User model: ${um?.observationCount || 0} observations${um?.narrative.confidence ? `, narrative confidence ${(um.narrative.confidence * 100).toFixed(0)}%` : ''}`);
 
     // ── Phase 6g3: Cron Scheduler (Hermes-inspired) ──
-    this.cronScheduler = new CronSchedulerService(join(ROOT_DIR, 'workspace'));
+    this.cronScheduler = new CronSchedulerService(WORKSPACE_DIR);
     await this.cronScheduler.initialize();
     // Register built-in handlers — user-created jobs reference these by name.
     this.cronScheduler.registerHandler('reindex-memory-search', async () => {
@@ -693,7 +702,7 @@ class AuthorAgentGateway {
     this.researchLookup = new ResearchLookupService();
     this.researchLookup.setDependencies(this.vault, this.aiRouter);
 
-    this.videoResearch = new VideoResearchService(join(ROOT_DIR, 'workspace'));
+    this.videoResearch = new VideoResearchService(WORKSPACE_DIR);
     this.videoResearch.setDependencies(this.vault, this.aiRouter);
     const videoDoctor = await this.videoResearch.doctor();
     if (videoDoctor.ready) {
@@ -707,18 +716,18 @@ class AuthorAgentGateway {
     logger.info(`  ✓ Story structures: ${this.storyStructures.list().length} structures available (Save the Cat, three-act, five-act / Freytag, Seven-Point / Wells, Hero's Journey, Romancing the Beat, Story Circle, Mystery 5-Stage, Martell Thematic, none)`);
 
     // ── Phase 6g8: Plot Promises (Sanderson-style promises + payoffs) ──
-    this.plotPromises = new PlotPromisesService(join(ROOT_DIR, 'workspace'));
+    this.plotPromises = new PlotPromisesService(WORKSPACE_DIR);
     await this.plotPromises.initialize();
     logger.info(`  ✓ Plot promises: tracker ready`);
 
     // ── Phase 6g9: Character voices (per-character StyleClone fingerprinting) ──
-    this.characterVoices = new CharacterVoicesService(join(ROOT_DIR, 'workspace'));
+    this.characterVoices = new CharacterVoicesService(WORKSPACE_DIR);
     this.characterVoices.setStyleClone(this.styleClone);
     await this.characterVoices.initialize();
     logger.info(`  ✓ Character voices: per-character voice drift tracker ready`);
 
     // ── Phase 6h: Website management — auto-add-book, blog drafter, deploy ──
-    this.websiteSites = new WebsiteSiteService(join(ROOT_DIR, 'workspace'));
+    this.websiteSites = new WebsiteSiteService(WORKSPACE_DIR);
     await this.websiteSites.initialize();
     this.blogPostDrafter = new BlogPostDrafterService();
     this.websiteDeploy = new WebsiteDeployService();
@@ -792,7 +801,7 @@ class AuthorAgentGateway {
     });
 
     // ── Phase 6h: Orchestrator (script manager) ──
-    this.orchestrator = new OrchestratorService(join(ROOT_DIR, 'workspace'));
+    this.orchestrator = new OrchestratorService(WORKSPACE_DIR);
     await this.orchestrator.initialize();
     const scriptCount = this.orchestrator.getConfigs().length;
     logger.info(`  ✓ Orchestrator: ${scriptCount} script(s) configured`);
@@ -810,11 +819,11 @@ class AuthorAgentGateway {
     logger.info('  ✓ KDP exporter, beta reader, dialogue auditor, hub, cover typography, external tools, track-changes ready');
 
     // ── Phase 6j: Wave 2 — career/craft/series/audiobook/voice ──
-    this.goalsService = new GoalsService(join(ROOT_DIR, 'workspace'));
+    this.goalsService = new GoalsService(WORKSPACE_DIR);
     await this.goalsService.initialize();
     logger.info(`  ✓ Author goals: ${this.goalsService.listGoals().length} tracked`);
 
-    this.seriesBible = new SeriesBibleService(join(ROOT_DIR, 'workspace'));
+    this.seriesBible = new SeriesBibleService(WORKSPACE_DIR);
     await this.seriesBible.initialize();
     logger.info(`  ✓ Series bible: ${this.seriesBible.listSeries().length} series`);
 
@@ -834,7 +843,7 @@ class AuthorAgentGateway {
       projects: this.projectEngine,
       aiComplete: (request) => this.aiRouter.complete(request),
       aiSelectProvider: (taskType: string) => this.aiRouter.selectProvider(taskType),
-      workspaceDir: join(ROOT_DIR, 'workspace'),
+      workspaceDir: WORKSPACE_DIR,
     });
     logger.info('  ✓ Sleep consolidation: CoreDigest materialization + free-tier passes ready');
 
@@ -843,7 +852,7 @@ class AuthorAgentGateway {
     // distills free-tier comment themes so future chapters can be drafted
     // with real reader-reaction data. Wattpad is an honest stub.
     this.readerFeedback = new ReaderFeedbackService({
-      workspaceDir: join(ROOT_DIR, 'workspace'),
+      workspaceDir: WORKSPACE_DIR,
       aiComplete: (request) => this.aiRouter.complete(request),
       aiSelectProvider: (taskType: string) => this.aiRouter.selectProvider(taskType),
     });
@@ -908,14 +917,14 @@ class AuthorAgentGateway {
     logger.info('  ✓ Learning service: recurring-issue → durable-lesson loop ready');
 
     // ── Phase 6k: Wave 3 — autonomous career agent (gated) ──
-    this.confirmationGate = new ConfirmationGateService(join(ROOT_DIR, 'workspace'));
+    this.confirmationGate = new ConfirmationGateService(WORKSPACE_DIR);
     this.confirmationGate.setAuditLogger((category, action, meta) => this.audit.log(category, action, meta));
     await this.confirmationGate.initialize();
     logger.info(`  ✓ Confirmation gate: ${this.confirmationGate.list({ status: 'pending' }).length} pending`);
 
     this.disclosures = new DisclosuresService();
 
-    this.launchOrchestrator = new LaunchOrchestratorService(join(ROOT_DIR, 'workspace'));
+    this.launchOrchestrator = new LaunchOrchestratorService(WORKSPACE_DIR);
     this.launchOrchestrator.setDependencies(this.confirmationGate, this.disclosures);
     await this.launchOrchestrator.initialize();
     logger.info(`  ✓ Launch orchestrator: ${this.launchOrchestrator.listLaunches().length} launch(es) tracked`);
@@ -923,7 +932,7 @@ class AuthorAgentGateway {
     this.amsAds = new AMSAdsService();
     this.bookbub = new BookBubSubmitterService();
 
-    this.releaseCalendar = new ReleaseCalendarService(join(ROOT_DIR, 'workspace'));
+    this.releaseCalendar = new ReleaseCalendarService(WORKSPACE_DIR);
     await this.releaseCalendar.initialize();
     logger.info(`  ✓ Release calendar: ${this.releaseCalendar.list().length} event(s)`);
 
@@ -936,12 +945,12 @@ class AuthorAgentGateway {
       (taskType: string) => this.aiRouter.selectProvider(taskType),
     );
 
-    this.websiteBuilder = new WebsiteBuilderService(join(ROOT_DIR, 'workspace'));
+    this.websiteBuilder = new WebsiteBuilderService(WORKSPACE_DIR);
     logger.info('  ✓ AMS, BookBub, Reader Intel, Translation, Website Builder ready');
     logger.warn('  ⚠ Wave 3 actions are gated — review SECURITY.md and confirm every external action.');
 
     // ── Phase 7: Heartbeat ──
-    this.heartbeat = new HeartbeatService(this.config.get('heartbeat'), this.memory, join(ROOT_DIR, 'workspace'));
+    this.heartbeat = new HeartbeatService(this.config.get('heartbeat'), this.memory, WORKSPACE_DIR);
 
     // Wire autonomous mode — heartbeat can now trigger project steps on a schedule
     const commandHandlers = this.buildTelegramCommandHandlers();
@@ -1002,7 +1011,7 @@ class AuthorAgentGateway {
           const parsed = JSON.parse(cleaned);
 
           // Save to self-improve log
-          const workspaceDir = join(ROOT_DIR, 'workspace');
+          const workspaceDir = WORKSPACE_DIR;
           const agentDir = join(workspaceDir, '.agent');
           await fs.mkdir(agentDir, { recursive: true });
           const logPath = join(agentDir, 'self-improve-log.json');
@@ -1104,7 +1113,7 @@ class AuthorAgentGateway {
       // Loads tasks from workspace/.config/idle-tasks.json (user-editable via dashboard)
       async () => {
         // Load tasks from config file, falling back to defaults
-        const idleConfigPath = join(ROOT_DIR, 'workspace', '.config', 'idle-tasks.json');
+        const idleConfigPath = join(WORKSPACE_DIR, '.config', 'idle-tasks.json');
         let idleTasks: Array<{ label: string; prompt: string; enabled?: boolean }> = [];
         try {
           if ((await import('fs')).existsSync(idleConfigPath)) {
@@ -1118,7 +1127,7 @@ class AuthorAgentGateway {
           idleTasks = (await import('./services/idle-tasks-defaults.js')).DEFAULT_IDLE_TASKS;
           // Save defaults on first run
           try {
-            const configDir = join(ROOT_DIR, 'workspace', '.config');
+            const configDir = join(WORKSPACE_DIR, '.config');
             await fs.mkdir(configDir, { recursive: true });
             await fs.writeFile(idleConfigPath, JSON.stringify({ tasks: idleTasks }, null, 2), 'utf-8');
           } catch { /* non-fatal */ }
@@ -1140,7 +1149,7 @@ class AuthorAgentGateway {
 
           if (result.text && result.text.length > 20) {
             // Save to workspace
-            const idleDir = join(ROOT_DIR, 'workspace', '.agent');
+            const idleDir = join(WORKSPACE_DIR, '.agent');
             await fs.mkdir(idleDir, { recursive: true });
             const dateStr = new Date().toISOString().split('T')[0];
             await fs.writeFile(
@@ -1418,7 +1427,7 @@ class AuthorAgentGateway {
     const parts = input.split(/\s+/);
     const cmd = parts[0].toLowerCase();
     const args = input.substring(cmd.length).trim();
-    const workspaceDir = join(ROOT_DIR, 'workspace');
+    const workspaceDir = WORKSPACE_DIR;
     const handlers = this.buildTelegramCommandHandlers();
 
     // Natural language commands (no slash prefix)
@@ -1977,7 +1986,7 @@ class AuthorAgentGateway {
    */
   private buildTelegramCommandHandlers() {
     const gateway = this;
-    const workspaceDir = join(ROOT_DIR, 'workspace');
+    const workspaceDir = WORKSPACE_DIR;
 
     return {
       /**
