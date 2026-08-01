@@ -37,7 +37,8 @@
       "enabled": false,
       "model": "sonnet",
       "maxConcurrent": 2,
-      "timeoutMs": 300000
+      "inactivityTimeoutMs": 90000,
+      "maxTimeoutMs": 900000
     }
   },
   "memory": {

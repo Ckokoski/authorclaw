@@ -1,26 +1,128 @@
 AUTHORAGENT SKILLS REFERENCE
-Auto-generated on startup — 5 skills loaded
+Auto-generated on startup — 29 skills loaded
 ════════════════════════════════════════════════════════════
 
-── Author Skills (5) ──
+── Core Skills (6) ──
 
-  author-os-workflow
-    Run an Author OS Workflow Engine template — JSON-defined writing workflows from Author OS
-    Keywords: run workflow, workflow template, author os workflow, load template, workflow engine, novel writing templates, quick actions templates, quick start, readme, revision templates
+  after-action-review
+    Structured post-goal reflection that extracts lessons, evaluates quality, and feeds the self-improvement loop
+    Keywords: after action review, review goal, post mortem, what went well, what went wrong, retrospective, goal review, debrief
 
-  author-os-book-bible
-    Use the Author OS Book Bible Engine for character / world / timeline tracking
-    Keywords: book bible, world bible, character bible, author os bible, series bible, readme, userguide
+  error-recovery
+    Intelligent error diagnosis, automatic recovery strategies, and prevention of recurring failures
+    Keywords: error, fix error, something broke, failed, not working, debug, troubleshoot, diagnose, recovery
 
-  author-os-autopsy
-    Run Author OS Manuscript Autopsy — pacing + structure + craft analysis on a manuscript
-    Keywords: manuscript autopsy, autopsy, analyze my manuscript, pacing analysis, structure analysis, readme
+  preference-learner
+    Track and learn user preferences for writing style, communication, and workflow
+    Keywords: my preferences, remember that I, I prefer, I like, I don't like, I always want, I never want, update preferences, show preferences, preference
 
-  author-os-library
-    Browse the Author OS AI Author Library for prompts, voice markers, and writing references
-    Keywords: author library, writing prompts, voice markers, prompt library, ai author library
+  prompt-optimizer
+    Automatically improves prompts based on output quality, user feedback, and A/B testing results
+    Keywords: optimize prompt, improve prompt, better prompt, prompt quality, test prompts, prompt a/b test, prompt lab
 
-  author-os-marketing
-    Generate marketing assets via the Author OS Creator Asset Suite — blurbs, ads, social posts
-    Keywords: creator asset, marketing assets, asset suite, author os marketing, launch assets
+  self-improve
+    Continuous self-improvement loop — AuthorAgent learns from mistakes, successes, and user feedback to get better over time
+    Keywords: self improve, improve yourself, learn from, what did you learn, improvement log, get better, lessons learned, self reflection, review performance
+
+  skill-acquisition
+    Research topics and create new skills for AuthorAgent to learn
+    Keywords: learn how to, add a skill for, find a tool for, go learn, research and create a skill, teach yourself, acquire skill, learn about
+
+── Author Skills (15) ──
+
+  beta-reader
+    Simulate beta reader feedback from different reader perspectives
+    Keywords: beta read, beta reader, reader feedback, test reader, would readers
+
+  book-bible
+    Maintain world consistency - characters, timeline, locations, rules, items
+    Keywords: book bible, character, character sheet, timeline, world building, world bible, consistency, continuity
+
+  continuity-check
+    Scan manuscript for inconsistencies in characters, timeline, settings, and names
+    Keywords: continuity, continuity check, consistency check, find inconsistencies, timeline check, plot holes, check continuity
+
+  cover-designer
+    Generate a complete book cover set (ebook, print, audiobook, social) with a rich visual brief
+    Keywords: design my cover, make a book cover, generate book cover, cover for my book, create cover art, cover set, book cover variants, audiobook cover, kindle cover
+
+  dialogue
+    Craft authentic dialogue with distinct character voices and subtext
+    Keywords: dialogue, conversation, character voice, how would they say, make them talk
+
+  format
+    Export manuscripts to DOCX, EPUB, PDF, KDP-ready formatting
+    Keywords: format, export, epub, kindle, KDP, pdf, docx, manuscript format
+
+  ingest-tool
+    Read source code of any tool and generate an AuthorAgent skill from it
+    Keywords: ingest tool, create skill from, import tool, make a skill, convert to skill, read this code, analyze this tool
+
+  manuscript-hub
+    Track word count, chapters, progress, streaks, and project status
+    Keywords: word count, progress, manuscript status, how's my book, writing streak, new project, start a new
+
+  nonfiction-research
+    Academic source gathering, citation management, fact-checking for nonfiction
+    Keywords: nonfiction, citation, cite, bibliography, source, academic, fact check, reference
+
+  outline
+    Create structured outlines using popular frameworks (Save the Cat, 3-Act, Hero's Journey, custom)
+    Keywords: outline, structure, plot, beats, save the cat, hero's journey, three act, story structure
+
+  premise
+    Develop compelling story premises with market awareness and emotional hooks
+    Keywords: premise, story idea, book concept, what if, high concept, elevator pitch
+
+  research
+    Constrained internet research with source tracking for fiction and nonfiction projects
+    Keywords: research, look up, find out about, fact check, what is, source
+
+  revise
+    Multi-pass revision - developmental editing, line editing, copy editing
+    Keywords: revise, edit, improve, rewrite, feedback, critique, review, developmental edit, line edit, copy edit
+
+  style-clone
+    Analyze and match the author's unique writing voice
+    Keywords: learn my style, match my voice, style check, voice profile, analyze my writing, sound like me
+
+  write
+    Draft scenes, chapters, and passages matching the author's voice and style
+    Keywords: write, draft, write a scene, write chapter, continue writing, write the
+
+── Marketing Skills (4) ──
+
+  ad-copy
+    Write ad copy for Amazon AMS, BookBub, Facebook, and other book advertising platforms
+    Keywords: ad copy, amazon ad, bookbub, facebook ad, advertising
+
+  blurb-writer
+    Write compelling book blurbs and descriptions for Amazon, Goodreads, and back cover
+    Keywords: blurb, book description, back cover, amazon description
+
+  marketing-research
+    Research literary agents, podcasts, book bloggers, reviewers, and newsletters in your genre with verified citations
+    Keywords: find literary agents, find a literary agent, find an agent for, research agents, find podcasts for authors, find author podcasts, book podcast research, find book bloggers, find book reviewers, find newsletters, find book reviewers, booktok research, bookstagram research, find indie reviewers, marketing research, promo research, find promo opportunities
+
+  website-publisher
+    Manage your author website — auto-publish books on completion, draft blog posts from your projects, render and deploy with one command
+    Keywords: publish my site, publish my website, update my website, update my site, deploy my website, deploy my site, render my site, render my website, draft a blog post, write a blog post, blog post about, announce my new book, new release post, behind the scenes post, excerpt post, teaser post, link site to project, register my site, set up my website
+
+── Ops Skills (4) ──
+
+  browser-automation
+    Drive a browser through Wave 3 author actions (KDP, AMS, BookBub, ESP) safely via a confirmation-gated executor
+    Keywords: open kdp, open amazon kdp, go to ams, submit to bookbub, browser action, automate browser, drive browser, take a screenshot, inspect page, browser doctor
+
+  decision-maker
+    Structured decision-making framework — weigh options, evaluate trade-offs, deliver clear recommendations
+    Keywords: decide, decision, pros and cons, compare options, should I, which option, trade-offs, weigh options
+
+  orchestrator-mgmt
+    Manage user scripts and automated processes — start, stop, restart, monitor, view logs
+    Keywords: script, scripts, restart script, start script, stop script, process, logs, orchestrator
+
+  task-planner
+    Break complex tasks into actionable steps with dependencies and priorities
+    Keywords: plan, break down, roadmap, step by step, how do I, task list, action plan, break this into steps
 

@@ -5,7 +5,7 @@
  */
 
 import { createHash } from 'crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Vault } from '../security/vault.js';
 import { CostTracker } from '../services/costs.js';
@@ -230,6 +230,11 @@ class Semaphore {
 
   setMax(max: number): void {
     this.max = max;
+  }
+
+  /** For diagnostics: how many calls are currently running vs. waiting for a slot. */
+  debugState(): string {
+    return `active=${this.active}/${this.max} queued=${this.queue.length}`;
   }
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
@@ -1096,6 +1101,33 @@ export class AIRouter {
     return this.claudeCliSemaphore.run(() => this.runClaudeCliOnce(provider, request));
   }
 
+  /**
+   * Runs `claude -p` in STREAMING mode and times it out on INACTIVITY, not
+   * total duration.
+   *
+   * Why: output-heavy tasks (full chapter drafts, 20-30 chapter outlines —
+   * up to TASK_OUTPUT_BUDGET's 16384 tokens) can legitimately take 5-10+
+   * minutes of steady token production through the CLI wrapper. A flat
+   * overall-duration timeout (previously 120s, then 300s) can't distinguish
+   * "still working, just slow" from "genuinely stuck" — it just kills
+   * whichever one happens to still be running when the clock runs out.
+   * Measured in production: one 24K-char-prompt call legitimately took
+   * 296.7s (just under the old 300s cap); a 20K-char-prompt call was killed
+   * at exactly 300s while (per this same logging) still producing output.
+   *
+   * The fix: `--output-format stream-json` emits one JSON object per line as
+   * the response is generated. We track the last time ANY data arrived and
+   * only kill the process if that goes quiet for `inactivityTimeoutMs` —
+   * so a slow-but-steady multi-minute generation is never killed early, but
+   * a genuine hang (no bytes at all) is caught quickly. `maxTimeoutMs` is a
+   * separate, generous absolute backstop against a truly runaway call.
+   *
+   * We also do NOT wait for the child process to exit naturally: resolve as
+   * soon as the `{"type":"result",...}` event is seen, then kill the
+   * process ourselves. This works around a confirmed upstream bug
+   * (anthropics/claude-code#25629) where stream-json mode can hang
+   * indefinitely *after* emitting the result event instead of exiting.
+   */
   private async runClaudeCliOnce(
     provider: AIProvider,
     request: CompletionRequest
@@ -1105,94 +1137,153 @@ export class AIRouter {
       .join('\n\n');
     const prompt = `${request.system}\n\n${transcript}`;
 
-    // Output-heavy tasks (full chapter drafts, 20-30 chapter outlines — up to
-    // TASK_OUTPUT_BUDGET's 16384 tokens) can genuinely take longer than a
-    // flat 120s to stream through the CLI wrapper, especially on opus. This
-    // was the actual root cause of "Claude Code CLI call timed out after
-    // 120s" on otherwise-healthy accounts: not a hang, just not enough time.
-    // Configurable via config.ai['claude-cli'].timeoutMs (default 300s).
-    const timeoutMs = this.config?.['claude-cli']?.timeoutMs ?? 300_000;
+    const inactivityTimeoutMs = this.config?.['claude-cli']?.inactivityTimeoutMs ?? 90_000;
+    const maxTimeoutMs = this.config?.['claude-cli']?.maxTimeoutMs ?? 900_000;
 
-    let stdout: string;
-    try {
-      // execFile (not exec/shell) — no shell interpolation. The prompt is
-      // NOT passed as an argv element: AuthorAgent's system prompt (soul +
-      // memory + context) routinely runs many KB, and on Windows the CLI is
-      // invoked through a shim whose effective command-line length caps out
-      // around 8K chars — a long prompt-as-argument blows past that and
-      // fails with "spawn ENAMETOOLONG" before the process even starts.
-      // Piping the prompt over stdin instead sidesteps the OS command-line
-      // limit entirely (verified against a 20K-char prompt).
-      const child = execFileAsync(
+    const startedAt = Date.now();
+    log.info(
+      `[claude-cli] spawning: model=${provider.model} promptChars=${prompt.length} ` +
+      `inactivityTimeoutMs=${inactivityTimeoutMs} maxTimeoutMs=${maxTimeoutMs} ` +
+      `activeSemaphoreSlots=${this.claudeCliSemaphore.debugState()}`
+    );
+
+    return new Promise<CompletionResponse>((resolve, reject) => {
+      // spawn (not execFile) — no shell interpolation, same as before. We
+      // need direct stream access here rather than a promise-on-exit, so we
+      // can react to data as it arrives instead of waiting for the process
+      // to finish (which, per the bug above, may never happen naturally).
+      //
+      // --max-turns: generous, not 1. AuthorAgent's system prompt has the
+      // model check Book Bible / style guide / voice profile / outline
+      // before writing (write skill) — each of those can be a tool call,
+      // consuming a "turn" before the actual text response. A cap of 1
+      // aborted those with subtype "error_max_turns" and an empty result
+      // (caught live: audit log showed exactly this). 12 leaves comfortable
+      // room for that context-gathering while still bounding a genuinely
+      // runaway agentic loop.
+      const child = spawn(
         'claude',
-        ['-p', '--output-format', 'json', '--model', provider.model],
-        { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }
+        ['-p', '--output-format', 'stream-json', '--verbose', '--max-turns', '12', '--model', provider.model],
+        { stdio: ['pipe', 'pipe', 'pipe'] }
       );
-      child.child.stdin!.end(prompt);
-      const result = await child;
-      stdout = result.stdout;
-    } catch (err: any) {
-      if (err?.code === 'ENOENT') {
-        throw new Error(`Claude Code CLI not found. Install it and run "claude login".`);
-      }
-      if (err?.code === 'ENAMETOOLONG') {
-        throw new Error(`Claude Code CLI error: prompt too long even for stdin. This shouldn't happen — please report it.`);
-      }
-      if (err?.killed || err?.signal === 'SIGTERM') {
-        throw new Error(`Claude Code CLI call timed out after ${Math.round(timeoutMs / 1000)}s.`);
-      }
-      const stderr = String(err?.stderr || '').toLowerCase();
-      if (stderr.includes('not logged in') || stderr.includes('authentication')) {
-        throw new Error(`Claude Code CLI is not authenticated. Run "claude login" first.`);
-      }
-      throw new Error(`Claude Code CLI error: ${err?.stderr || err?.message || err}`);
-    }
 
-    // ── Parse, with a fallback for schema drift ──
-    // Preferred path: --output-format json gives { result, usage }. Fallback:
-    // if JSON.parse fails (CLI version mismatch, a stray status line before
-    // the JSON blob, or a future format change), scan for the last
-    // JSON-looking blob; if that also fails, fall back to raw stdout as
-    // plain text rather than failing the whole call outright.
-    let text: string;
-    let usage: { input_tokens?: number; output_tokens?: number } | undefined;
+      let stdoutBuf = '';
+      let stderrBuf = '';
+      let settled = false;
+      let lastActivity = Date.now();
 
-    try {
-      const data = JSON.parse(stdout);
-      text = data?.result ?? data?.text ?? '';
-      usage = data?.usage;
-      if (!text) throw new Error('parsed JSON had no result/text field');
-    } catch {
-      const lastBrace = stdout.lastIndexOf('{');
-      if (lastBrace >= 0) {
-        try {
-          const data = JSON.parse(stdout.slice(lastBrace));
-          text = data?.result ?? data?.text ?? '';
-          usage = data?.usage;
-        } catch {
-          text = stdout.trim();
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(inactivityCheck);
+        clearTimeout(hardCeiling);
+        fn();
+        if (!child.killed) child.kill('SIGTERM');
+      };
+
+      const inactivityCheck = setInterval(() => {
+        const idleMs = Date.now() - lastActivity;
+        if (idleMs > inactivityTimeoutMs) {
+          log.warn(`[claude-cli] no output for ${Math.round(idleMs / 1000)}s — treating as stuck, killing.`);
+          finish(() => reject(new Error(
+            `Claude Code CLI: no output for ${Math.round(inactivityTimeoutMs / 1000)}s (likely stuck) ` +
+            `after ${Date.now() - startedAt}ms total.`
+          )));
         }
-      } else {
-        text = stdout.trim();
-      }
+      }, 5_000);
 
-      if (!text) {
-        throw new Error(
-          `Claude Code CLI output didn't match the expected JSON shape and had no ` +
-          `usable fallback text. CLI version: ${this.claudeCliVersion ?? 'unknown'}. ` +
-          `Raw output (truncated): ${stdout.slice(0, 300)}`
+      const hardCeiling = setTimeout(() => {
+        finish(() => reject(new Error(
+          `Claude Code CLI call exceeded the ${Math.round(maxTimeoutMs / 1000)}s hard ceiling — ` +
+          `still producing output, but this is taking unreasonably long.`
+        )));
+      }, maxTimeoutMs);
+
+      child.on('error', (err: any) => {
+        finish(() => {
+          if (err?.code === 'ENOENT') {
+            reject(new Error(`Claude Code CLI not found. Install it and run "claude login".`));
+          } else {
+            reject(new Error(`Claude Code CLI spawn error: ${err?.message || err}`));
+          }
+        });
+      });
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        lastActivity = Date.now();
+        stdoutBuf += chunk.toString('utf-8');
+        let idx: number;
+        while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
+          const line = stdoutBuf.slice(0, idx).trim();
+          stdoutBuf = stdoutBuf.slice(idx + 1);
+          if (!line) continue;
+          let evt: any;
+          try {
+            evt = JSON.parse(line);
+          } catch {
+            continue; // not every line is JSON we care about; skip silently
+          }
+          if (evt?.type !== 'result') continue;
+
+          const text = evt?.result ?? '';
+          log.info(
+            `[claude-cli] result event after ${Date.now() - startedAt}ms: ` +
+            `is_error=${evt?.is_error} subtype=${evt?.subtype} numTurns=${evt?.num_turns} chars=${text.length}` +
+            (evt?.is_error && !text ? ` (empty result on error — subtype is the only detail available)` : '')
+          );
+          finish(() => {
+            if (evt?.is_error) {
+              reject(new Error(`Claude Code CLI error: ${text || evt?.subtype || 'unknown error'}`));
+              return;
+            }
+            if (!text) {
+              reject(new Error(`Claude Code CLI returned an empty result.`));
+              return;
+            }
+            resolve({
+              text,
+              tokensUsed: (evt?.usage?.input_tokens ?? 0) + (evt?.usage?.output_tokens ?? 0),
+              // Rides the subscription — no separate metered cost to the
+              // user, even though the CLI's own JSON includes an internal
+              // total_cost_usd estimate.
+              estimatedCost: 0,
+              provider: provider.id, // 'claude-cli' or 'claude-cli-opus'
+            });
+          });
+        }
+      });
+
+      child.stderr.on('data', (chunk: Buffer) => {
+        lastActivity = Date.now();
+        stderrBuf += chunk.toString('utf-8');
+      });
+
+      // Only reached if the process exits WITHOUT us ever seeing a result
+      // event (crash, auth failure before any output, killed by something
+      // other than our own finish()) — the normal success/error paths above
+      // already resolved/rejected and killed the child themselves.
+      child.on('close', (code, signal) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(inactivityCheck);
+        clearTimeout(hardCeiling);
+        log.warn(
+          `[claude-cli] exited (code=${code}, signal=${signal}) after ${Date.now() - startedAt}ms ` +
+          `without a result event. stderr="${stderrBuf.slice(0, 1500)}"`
         );
-      }
-    }
+        const stderrLower = stderrBuf.toLowerCase();
+        if (stderrLower.includes('not logged in') || stderrLower.includes('authentication')) {
+          reject(new Error(`Claude Code CLI is not authenticated. Run "claude logout" then "claude login" first.`));
+          return;
+        }
+        reject(new Error(
+          `Claude Code CLI exited (code=${code}, signal=${signal}) without producing a result. ` +
+          `stderr="${stderrBuf.slice(0, 500)}"`
+        ));
+      });
 
-    return {
-      text,
-      tokensUsed: (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0),
-      // Rides the subscription — no separate metered cost to the user, even
-      // though the CLI's own JSON includes an internal total_cost_usd estimate.
-      estimatedCost: 0,
-      provider: provider.id, // 'claude-cli' or 'claude-cli-opus'
-    };
+      child.stdin!.end(prompt);
+    });
   }
 
   // ── OpenAI-compatible (OpenAI, DeepSeek) ──
