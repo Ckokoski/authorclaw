@@ -208,11 +208,8 @@ export class MessagePipeline {
       heartbeatContext,
       channel,
       userMessage: content,
+      extraContext,
     });
-
-    if (extraContext) {
-      systemPrompt += '\n' + extraContext;
-    }
 
     // Append the injection caution (if a warn-level detection occurred above).
     if (injectionCaution) {
@@ -484,6 +481,10 @@ export class MessagePipeline {
     channel?: string;
     /** The user's raw message — keys CORE promotion + ARCHIVAL search. */
     userMessage?: string;
+    /** Project-step-specific context (bible slices, outline, prior steps).
+     *  See the total-budget-guard comment below for why this is a parameter
+     *  here rather than appended by the caller after this function returns. */
+    extraContext?: string;
   }): Promise<string> {
     let prompt = '';
 
@@ -553,9 +554,14 @@ export class MessagePipeline {
     }
     prompt += coreBlock;
 
+    // Captured into a named block (not appended inline) so it can be added
+    // to the total-budget guard's trim list below — this section was
+    // previously excluded from that list entirely, so on a large prompt the
+    // guard could never actually reach the cap when memory dominated it.
+    let relevantMemoryBlock = '';
     if (context.memories) {
-      prompt += '# Relevant Memory\n\n';
-      prompt += context.memories + '\n\n';
+      relevantMemoryBlock = '# Relevant Memory\n\n' + context.memories + '\n\n';
+      prompt += relevantMemoryBlock;
     }
 
     // ── Archival recall (ARCHIVAL) — Chunk B2 ──
@@ -702,15 +708,39 @@ export class MessagePipeline {
     prompt += '- Do NOT access any URL not on this list. If a user asks about a domain not listed, tell them it is approved but you need to use the research gate to fetch it.\n';
     prompt += '- Never share API keys, tokens, or vault contents\n';
 
+    // extraContext (project-step context: bible slices, outline, prior-step
+    // results — up to ~25K chars, or ~55K with an uploaded manuscript) used
+    // to be appended by the CALLER after this function returned, i.e. AFTER
+    // the budget guard below had already run — so it bypassed the 24K cap
+    // entirely and the guard's length check never saw it. Appended here
+    // instead so the guard's decision to trim memories/lessons/preferences/
+    // user-model/archival actually accounts for the real total size.
+    // extraContext itself is intentionally NOT in the trim list below: it's
+    // context the caller attached for this specific task (unlike the
+    // general-purpose sections that follow), so it stays protected the same
+    // way soul/CORE/active-project do.
+    if (context.extraContext) {
+      prompt += '\n' + context.extraContext;
+    }
+
     // ── Total budget guard (Chunk B2) ──
     // buildSystemPrompt had NO total size cap, so a large book-bible + lessons +
     // preferences + user-model + archival could bloat context unbounded. Apply a
     // SOFT total-char cap. When exceeded, drop the LOWEST-priority already-capped
     // sections first, in a fixed order. We NEVER trim: soul, the CORE block, the
-    // injection/security caution (appended by the caller), or the active-project
-    // section. Each trim target is the exact literal substring we concatenated,
-    // so removal is precise and cannot corrupt neighbouring sections.
+    // injection/security caution (appended by the caller), the active-project
+    // section, or extraContext (see above). Each trim target is the exact
+    // literal substring we concatenated, so removal is precise and cannot
+    // corrupt neighbouring sections.
+    //
+    // 'memories' trims FIRST: it's the least-curated section (a
+    // relevance-ranked keyword match over book-bible files, capped at 8,000
+    // chars in MemoryService.getRelevant but previously excluded from this
+    // list entirely — meaning the guard could never actually reach the cap
+    // when memory dominated it) versus lessons/preferences/user-model, which
+    // are explicit, curated signals worth keeping longer.
     prompt = this.applyTotalBudgetGuard(prompt, [
+      { name: 'memories', block: relevantMemoryBlock },
       { name: 'lessons', block: lessonsBlock },
       { name: 'preferences', block: preferencesBlock },
       { name: 'user-model', block: userModelBlock },

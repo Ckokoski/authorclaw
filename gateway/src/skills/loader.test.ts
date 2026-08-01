@@ -261,18 +261,18 @@ describe('SkillLoader.matchSkills — ranking, cap, budget', () => {
     expect(results[0]).toContain('multi-hit');
   });
 
-  it('caps results at MAX_MATCHED_SKILLS (3) even when more skills match', async () => {
-    for (let i = 0; i < 5; i++) {
+  it('caps results at MAX_MATCHED_SKILLS (5) even when more skills match', async () => {
+    for (let i = 0; i < 7; i++) {
       await writeSkillFixture(skillsDir, 'core', `skill-${i}`, {
         description: `Skill ${i}`,
         triggers: [`trigger${i}`],
       });
     }
     await loader.loadAll();
-    const input = 'trigger0 trigger1 trigger2 trigger3 trigger4';
+    const input = 'trigger0 trigger1 trigger2 trigger3 trigger4 trigger5 trigger6';
     const results = loader.matchSkills(input);
-    expect(results.length).toBeLessThanOrEqual(3);
-    expect(results).toHaveLength(3);
+    expect(results.length).toBeLessThanOrEqual(5);
+    expect(results).toHaveLength(5);
   });
 
   it('matching is case-insensitive', async () => {
@@ -306,11 +306,11 @@ describe('SkillLoader.matchSkills — ranking, cap, budget', () => {
     }
   });
 
-  it('truncates a skill body that would exceed the ~8000-char budget and appends [truncated]', async () => {
+  it('truncates a skill body that would exceed the ~15000-char budget and appends [truncated]', async () => {
     await writeSkillFixture(skillsDir, 'core', 'giant-skill', {
       description: 'Giant skill body',
       triggers: ['giant'],
-      body: 'y'.repeat(10000),
+      body: 'y'.repeat(18000),
     });
     await loader.loadAll();
     const results = loader.matchSkills('giant');
@@ -331,18 +331,19 @@ describe('SkillLoader.matchSkills — ranking, cap, budget', () => {
   });
 
   it('omits body entirely (description-only) once the budget is fully exhausted by prior matches', async () => {
-    // Two large skills that both match, ranked so the first consumes the
-    // entire ~8000 char budget, leaving <=200 chars remaining for the second
-    // (triggering the "budget exhausted" branch rather than a truncated slice).
+    // Two large skills that both match, ranked so the first consumes nearly
+    // the entire ~15000 char budget, leaving <=200 chars remaining for the
+    // second (triggering the "budget exhausted" branch rather than a
+    // truncated slice).
     await writeSkillFixture(skillsDir, 'core', 'first-huge', {
       description: 'First huge, matches twice for higher score',
       triggers: ['sharedterm', 'firsthuge'],
-      body: 'z'.repeat(7950),
+      body: 'z'.repeat(14900),
     });
     await writeSkillFixture(skillsDir, 'core', 'second-huge', {
       description: 'Second huge',
       triggers: ['sharedterm'],
-      body: 'w'.repeat(7950),
+      body: 'w'.repeat(14900),
     });
     await loader.loadAll();
     const results = loader.matchSkills('sharedterm firsthuge appears in this input');

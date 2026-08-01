@@ -287,8 +287,16 @@ export class SkillLoader {
    * callers join these into the system prompt).
    */
   matchSkills(input: string): string[] {
-    const MAX_MATCHED_SKILLS = 3;
-    const CONTENT_BUDGET_CHARS = 8000;
+    // Raised from 3/8,000 now that the claude-cli provider carries far less
+    // dead weight per call (~28,800 tokens of Claude Code's own agentic
+    // scaffolding removed — see router.ts's buildClaudeCliArgs) and
+    // MemoryService.getRelevant() is bounded (was unbounded up to 50,000
+    // chars, now capped at 8,000). This budget is what actually reaches the
+    // model as craft guidance — the loader was previously logging
+    // "body truncated" / "body omitted — prompt budget exhausted" under the
+    // old cap, meaning skill content was losing to prompt bloat.
+    const MAX_MATCHED_SKILLS = 5;
+    const CONTENT_BUDGET_CHARS = 15000;
 
     const lower = input.toLowerCase();
     const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
