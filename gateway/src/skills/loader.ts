@@ -227,7 +227,10 @@ export class SkillLoader {
 
   private parseSkill(content: string, name: string, category: 'core' | 'author' | 'marketing' | 'premium' | 'ops'): Skill | null {
     // Parse YAML frontmatter
-    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    // Note: tolerate CRLF line endings (\r\n) — a checkout with git's Windows
+    // default `core.autocrlf=true` produces \r\n-terminated SKILL.md files,
+    // and a bare \n-only regex here silently fails to match every skill.
+    const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!frontmatterMatch) {
       if (!this.warnedSkills.has(name)) {
         this.warnedSkills.add(name);
