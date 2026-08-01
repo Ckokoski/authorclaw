@@ -33,6 +33,12 @@
   --warn: #f59e0b;
   --sidebar-w: 240px;
   --sidebar-collapsed: 64px;
+  /* Default width for the chat drawer — was a fixed 380px, cramped for the
+     long-form responses this app routinely generates (full chapters,
+     multi-thousand-word outlines). Now a CSS var so the drag handle (see
+     chatDrawerResizeHandle below) can override it live; the value here is
+     just the first-run default before any user preference is saved. */
+  --chat-drawer-w: 760px;
   --radius: 12px;
   --radius-sm: 8px;
   --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
@@ -392,7 +398,7 @@ textarea { resize: vertical; min-height: 60px; }
   position: fixed;
   top: 0;
   right: 0;
-  width: 380px;
+  width: var(--chat-drawer-w);
   max-width: 92vw;
   height: 100vh;
   background: var(--bg-secondary);
@@ -404,7 +410,25 @@ textarea { resize: vertical; min-height: 60px; }
   transition: transform 0.25s ease;
   z-index: 500;
 }
+/* No transition on width while actively dragging — otherwise every mousemove
+   fights a 0.25s easing and the drawer visibly lags behind the cursor. */
+.chat-drawer.resizing { transition: none; }
 .chat-drawer.open { transform: translateX(0); }
+.chat-drawer-resize-handle {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 501;
+  background: transparent;
+}
+.chat-drawer-resize-handle:hover,
+.chat-drawer-resize-handle.dragging {
+  background: var(--accent);
+  opacity: 0.4;
+}
 .chat-drawer-header {
   display: flex;
   align-items: center;
@@ -1657,6 +1681,7 @@ textarea { resize: vertical; min-height: 60px; }
      ═══════════════════════════════════════════════ -->
 <div class="chat-drawer-overlay" id="chatDrawerOverlay"></div>
 <div class="chat-drawer" id="chatDrawer">
+  <div class="chat-drawer-resize-handle" id="chatDrawerResizeHandle" title="Drag to resize"></div>
   <div class="chat-drawer-header">
     <span class="card-title">Chat with AuthorAgent</span>
     <div style="display:flex;align-items:center;gap:8px;">
@@ -2154,6 +2179,80 @@ document.addEventListener('keydown', function(e) {
 });
 // Restore persisted state on load (default closed if never set).
 applyChatDrawerState(isChatDrawerOpen());
+
+// ── Chat Drawer Resize ──
+// Drag the left edge to resize; width persists across sessions. Was a fixed
+// 380px, cramped for the long-form output this app routinely generates
+// (full chapters, multi-thousand-word outlines) — see --chat-drawer-w above.
+var CHAT_DRAWER_WIDTH_KEY = 'authorclaw_chat_drawer_width';
+var CHAT_DRAWER_MIN_WIDTH = 340;
+function getChatDrawerMaxWidth() {
+  // Leave a little breathing room so the drawer can never fully swallow
+  // the main content area on a narrower laptop screen.
+  return Math.min(1400, window.innerWidth - 200);
+}
+function clampChatDrawerWidth(px) {
+  return Math.max(CHAT_DRAWER_MIN_WIDTH, Math.min(getChatDrawerMaxWidth(), px));
+}
+function applyChatDrawerWidth(px) {
+  document.documentElement.style.setProperty('--chat-drawer-w', px + 'px');
+}
+function restoreChatDrawerWidth() {
+  var saved;
+  try { saved = parseInt(localStorage.getItem(CHAT_DRAWER_WIDTH_KEY), 10); } catch (e) { saved = NaN; }
+  if (!isNaN(saved) && saved > 0) applyChatDrawerWidth(clampChatDrawerWidth(saved));
+}
+(function setupChatDrawerResize() {
+  var handle = document.getElementById('chatDrawerResizeHandle');
+  var drawer = document.getElementById('chatDrawer');
+  if (!handle || !drawer) return;
+
+  var dragging = false;
+
+  function onMove(e) {
+    if (!dragging) return;
+    var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    // Drawer is right-anchored (right: 0), so its width is just the
+    // distance from the cursor to the viewport's right edge.
+    var width = clampChatDrawerWidth(window.innerWidth - clientX);
+    applyChatDrawerWidth(width);
+  }
+  function onEnd() {
+    if (!dragging) return;
+    dragging = false;
+    drawer.classList.remove('resizing');
+    handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    var current = drawer.getBoundingClientRect().width;
+    try { localStorage.setItem(CHAT_DRAWER_WIDTH_KEY, String(Math.round(current))); } catch (e) { /* ignore */ }
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onEnd);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onEnd);
+  }
+  function onStart(e) {
+    dragging = true;
+    drawer.classList.add('resizing');
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none'; // prevent text selection while dragging
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onEnd);
+    document.addEventListener('touchmove', onMove, { passive: true });
+    document.addEventListener('touchend', onEnd);
+    e.preventDefault();
+  }
+  handle.addEventListener('mousedown', onStart);
+  handle.addEventListener('touchstart', onStart, { passive: false });
+
+  // Re-clamp on viewport resize so a saved wide-monitor width doesn't blow
+  // past the (window-dependent) max if the browser window shrinks later.
+  window.addEventListener('resize', function() {
+    var current = drawer.getBoundingClientRect().width;
+    var clamped = clampChatDrawerWidth(current);
+    if (clamped !== current) applyChatDrawerWidth(clamped);
+  });
+})();
+restoreChatDrawerWidth();
 
 // ================================================================
 // PROJECTS PANEL
