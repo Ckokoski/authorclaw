@@ -37,8 +37,14 @@
       "enabled": false,
       "model": "sonnet",
       "maxConcurrent": 2,
-      "inactivityTimeoutMs": 90000,
-      "maxTimeoutMs": 900000
+      "inactivityTimeoutMs": 60000,
+      "maxTimeoutMs": 900000,
+      "firstTokenTimeoutMs": 120000,
+      "firstTokenCeilingMs": 420000,
+      "queueWaitTimeoutMs": 600000,
+      "minSpawnGapMs": 1500,
+      "maxBackoffMs": 120000,
+      "canary": true
     }
   },
   "memory": {

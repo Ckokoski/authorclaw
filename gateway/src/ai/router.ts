@@ -4,8 +4,12 @@
  * Optimized for writing tasks
  */
 
-import { createHash } from 'crypto';
-import { execFile, spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'crypto';
+import { execFile, spawn as nodeSpawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { Vault } from '../security/vault.js';
 import { CostTracker } from '../services/costs.js';
@@ -209,6 +213,15 @@ export const KNOWN_MODELS: Record<string, string[]> = {
  */
 const CLAUDE_CLI_PREMIUM_TASKS = new Set(['creative_writing', 'final_edit']);
 
+/** claude-cli and claude-cli-opus share ONE binary, ONE OAuth token, and ONE
+ *  rate limiter. Anywhere we pick a "different" provider as a fallback or
+ *  measure transport health, both ids must be treated as the same transport
+ *  — routing a failed claude-cli call to claude-cli-opus is not a fallback,
+ *  it's a retry of the same broken thing (confirmed in production logs: an
+ *  auth failure on claude-cli was immediately followed by the identical
+ *  auth failure on claude-cli-opus). */
+const CLAUDE_CLI_TRANSPORT_IDS = new Set(['claude-cli', 'claude-cli-opus']);
+
 // ═══════════════════════════════════════════════════════════
 // Claude Code CLI provider helpers
 // ═══════════════════════════════════════════════════════════
@@ -223,7 +236,7 @@ const CLAUDE_CLI_PREMIUM_TASKS = new Set(['creative_writing', 'final_edit']);
  * config/user.json — same pattern as ollama.endpoint), default 2.
  */
 class Semaphore {
-  private queue: Array<() => void> = [];
+  private queue: Array<{ resolve: () => void }> = [];
   private active = 0;
 
   constructor(private max: number) {}
@@ -237,9 +250,33 @@ class Semaphore {
     return `active=${this.active}/${this.max} queued=${this.queue.length}`;
   }
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
+  /**
+   * Runs `fn` once a slot is free. `queueTimeoutMs`, if given, bounds how
+   * long a caller will wait for a slot — previously this wait was unbounded
+   * and invisible (a burst of large background calls could starve an
+   * interactive chat message for minutes with no signal anything was
+   * wrong). A timed-out waiter is spliced out of the queue rather than
+   * quietly resolving into a slot nobody wants anymore.
+   */
+  async run<T>(fn: () => Promise<T>, opts?: { queueTimeoutMs?: number }): Promise<T> {
     if (this.active >= this.max) {
-      await new Promise<void>(resolve => this.queue.push(resolve));
+      await new Promise<void>((resolveWait, rejectWait) => {
+        const entry: { resolve: () => void } = { resolve: resolveWait };
+        this.queue.push(entry);
+        if (opts?.queueTimeoutMs) {
+          const timer = setTimeout(() => {
+            const idx = this.queue.indexOf(entry);
+            if (idx >= 0) {
+              this.queue.splice(idx, 1);
+              rejectWait(new Error(
+                `Timed out after ${opts.queueTimeoutMs}ms waiting for a claude-cli slot ` +
+                `(queue depth was ${this.queue.length + 1}).`
+              ));
+            }
+          }, opts.queueTimeoutMs);
+          entry.resolve = () => { clearTimeout(timer); resolveWait(); };
+        }
+      });
     }
     this.active++;
     try {
@@ -247,10 +284,297 @@ class Semaphore {
     } finally {
       this.active--;
       const next = this.queue.shift();
-      if (next) next();
+      if (next) next.resolve();
     }
   }
 }
+
+/**
+ * Spaces out claude-cli spawns and backs off on failure. One AuthorAgent
+ * revision step can fire ~11 completion calls (primary + fallback +
+ * short-response retry + up to 6 word-count continuations + judge + quality
+ * retry) with zero spacing between them today. Living at the transport layer
+ * (rather than in step-executor's retry ladder) means every call site is
+ * protected without touching that code.
+ */
+class CliPacer {
+  private nextAllowedAt = 0;
+  private backoffMs = 0;
+
+  constructor(private minGapMs: number, private maxBackoffMs: number, private now: () => number = Date.now) {}
+
+  configure(minGapMs: number, maxBackoffMs: number): void {
+    this.minGapMs = minGapMs;
+    this.maxBackoffMs = maxBackoffMs;
+  }
+
+  async waitTurn(): Promise<void> {
+    const wait = this.nextAllowedAt - this.now();
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  }
+
+  recordSuccess(): void {
+    this.backoffMs = 0;
+    this.nextAllowedAt = this.now() + this.minGapMs;
+  }
+
+  recordFailure(): void {
+    this.backoffMs = Math.min(Math.max(2_000, this.backoffMs * 2), this.maxBackoffMs);
+    const jitter = this.backoffMs * (0.8 + Math.random() * 0.4); // ±20%
+    this.nextAllowedAt = this.now() + jitter;
+  }
+}
+
+/** Classification of a claude-cli failure, used to decide whether to open
+ *  the shared circuit breaker and how to pace retries. */
+export type CliFailureKind = 'auth' | 'quota' | 'transient' | 'fatal';
+
+export class ClaudeCliError extends Error {
+  constructor(message: string, public kind: CliFailureKind = 'transient', public retryAfterMs?: number) {
+    super(message);
+    this.name = 'ClaudeCliError';
+  }
+}
+
+const CLI_FATAL_PATTERNS = ['error_max_turns', 'system prompt file not found'];
+const CLI_AUTH_PATTERNS = [
+  'not logged in', 'authentication', 'oauth', 'invalid_grant',
+  'token has expired', 'claude login', 'unauthenticated', 're-authenticate',
+];
+const CLI_QUOTA_PATTERNS = ['usage limit', 'rate limit', '429', 'resets at', 'overloaded_error', 'credit balance'];
+
+/**
+ * Classify a claude-cli failure from whatever text we have (the result
+ * event's error text and/or buffered stderr). Fed from both the streaming
+ * result-event path and the process-exited-without-a-result path, so the
+ * two can't disagree about what kind of failure just happened.
+ *
+ * Important constraint (verified against the live CLI): `claude auth status`
+ * reports `loggedIn: true` even when a USAGE CAP is exhausted, not just when
+ * genuinely logged out. So an 'auth' classification can be cleared by a
+ * lazy re-probe of auth status; a 'quota' classification cannot — it only
+ * clears once its retry deadline passes.
+ */
+export function classifyClaudeCliFailure(input: { resultText?: string; stderr?: string }): {
+  kind: CliFailureKind;
+  message: string;
+  retryAfterMs?: number;
+} {
+  const hay = `${input.resultText || ''} ${input.stderr || ''}`.toLowerCase();
+
+  for (const p of CLI_FATAL_PATTERNS) {
+    if (hay.includes(p)) return { kind: 'fatal', message: input.resultText || input.stderr || p };
+  }
+  for (const p of CLI_AUTH_PATTERNS) {
+    if (hay.includes(p)) {
+      return {
+        kind: 'auth',
+        message: 'Claude Code CLI auth expired or revoked. Run: claude logout && claude login',
+      };
+    }
+  }
+  for (const p of CLI_QUOTA_PATTERNS) {
+    if (hay.includes(p)) {
+      const m = hay.match(/resets at ([^.,\n]+)/);
+      let retryAfterMs: number | undefined;
+      if (m) {
+        const parsed = Date.parse(m[1]);
+        if (!isNaN(parsed)) retryAfterMs = Math.max(60_000, parsed - Date.now());
+      }
+      return {
+        kind: 'quota',
+        message: `Claude Code usage limit reached.${m ? ` Resets at ${m[1].trim()}.` : ''}`,
+        retryAfterMs: retryAfterMs ?? 15 * 60_000,
+      };
+    }
+  }
+  return { kind: 'transient', message: input.resultText || input.stderr || 'unknown error' };
+}
+
+/** Parses a stream-json `result` event into either success text or an error. */
+export function parseClaudeCliResultEvent(
+  evt: any
+): { ok: true; text: string; tokensUsed: number } | { ok: false; error: string } {
+  const text = evt?.result ?? '';
+  if (evt?.is_error) {
+    return { ok: false, error: text || evt?.subtype || 'unknown error' };
+  }
+  if (!text) {
+    return { ok: false, error: 'Claude Code CLI returned an empty result.' };
+  }
+  return {
+    ok: true,
+    text,
+    tokensUsed: (evt?.usage?.input_tokens ?? 0) + (evt?.usage?.output_tokens ?? 0),
+  };
+}
+
+/** Incremental newline-delimited-JSON line splitter for a streamed stdout. */
+export function createNdjsonLineReader(onLine: (line: string) => void): { push(chunk: string): void } {
+  let buf = '';
+  return {
+    push(chunk: string) {
+      buf += chunk;
+      let idx: number;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (line) onLine(line);
+      }
+    },
+  };
+}
+
+/**
+ * How long to wait for the FIRST byte of output before treating a call as
+ * stuck. A trivial prompt needs only the base budget; AuthorAgent's largest
+ * prompts (up to ~600,000 chars for full-manuscript consistency checks) can
+ * legitimately take minutes just to upload and begin generating. Scaled
+ * linearly by prompt size, clamped to [base, ceiling].
+ */
+export function computeFirstTokenBudgetMs(promptChars: number, baseMs = 120_000, ceilingMs = 420_000): number {
+  const scaled = baseMs + promptChars * 0.3;
+  return Math.min(Math.max(scaled, baseMs), ceilingMs);
+}
+
+/**
+ * The CLI has no `--max-tokens` flag and applies no output cap of its own —
+ * so TASK_OUTPUT_BUDGET's per-task-type budgets (added specifically to fix
+ * truncated outlines/character-profiles on other providers) can't be
+ * enforced the same way here. What *is* worth preserving is the relative
+ * signal "this task wants a long answer" — appended to the system prompt we
+ * now fully control via --system-prompt-file. Only emitted for genuinely
+ * long-output tasks (maxTokens >= 8192) so short tasks aren't padded.
+ */
+export function deriveLengthDirective(maxTokens?: number): string {
+  if (!maxTokens || maxTokens < 8192) return '';
+  const words = Math.round(maxTokens * 0.75);
+  return (
+    `\n\n## Response length\n` +
+    `This task expects a substantial response (~${words} words). Do not truncate. ` +
+    `Produce the complete answer in a single response.\n`
+  );
+}
+
+const THINKING_TOKEN_BUDGETS: Record<'low' | 'medium' | 'high', number> = {
+  low: 1024,
+  medium: 4096,
+  high: 16384,
+};
+
+/** Maps AuthorAgent's abstract thinking level to the CLI's --max-thinking-tokens. */
+export function mapThinkingToMaxThinkingTokens(thinking?: 'low' | 'medium' | 'high'): number | undefined {
+  return thinking ? THINKING_TOKEN_BUDGETS[thinking] : undefined;
+}
+
+const SAFE_CLAUDE_CLI_MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
+
+/** Defense-in-depth: the model string flows from user-editable config
+ *  (model-config.json via setProviderModel) into a spawned argv element. */
+export function isSafeClaudeCliModel(model: string): boolean {
+  return SAFE_CLAUDE_CLI_MODEL_PATTERN.test(model);
+}
+
+/**
+ * Exact argv for the hardened, NON-agentic invocation. Tools, skills,
+ * slash-commands, and MCP are all disabled — AuthorAgent already injects
+ * every piece of context (book bible, lessons, memory) directly into the
+ * prompt, so the model never needed Claude Code's own tool access. Verified
+ * empirically: dropping this scaffolding cuts ~28,800 tokens of dead weight
+ * per call (measured: 28,845 -> 383 context tokens for an identical trivial
+ * prompt; -> 139 with a neutral cwd, see resolveClaudeCliBin/CWD below).
+ *
+ * `--system-prompt-file` and `--max-turns` are real flags but UNDOCUMENTED —
+ * absent from `claude --help`, confirmed only in the binary's own strings.
+ * The CLI silently ignores unknown options with no error at all (verified:
+ * `claude -p --definitely-not-a-flag` produces zero complaint), so a future
+ * release renaming either flag would make AuthorAgent send NONE of the
+ * soul/book-bible/voice-profile context with no error — see
+ * verifyClaudeCliHardening() for the startup canary that guards against
+ * exactly this.
+ *
+ * `--tools` is a VARIADIC option — it must never be placed last, or it will
+ * greedily swallow whatever argv element follows it.
+ */
+export function buildClaudeCliArgs(o: {
+  model: string;
+  systemPromptFile: string;
+  maxTurns?: number;
+  maxThinkingTokens?: number;
+}): string[] {
+  const args = [
+    '-p',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--include-partial-messages',
+    '--model', o.model,
+    '--system-prompt-file', o.systemPromptFile,
+    '--tools', '',
+    '--disable-slash-commands',
+    '--strict-mcp-config',
+    '--setting-sources', '',
+    '--no-session-persistence',
+    '--max-turns', String(o.maxTurns ?? 1),
+  ];
+  if (o.maxThinkingTokens) {
+    args.push('--max-thinking-tokens', String(o.maxThinkingTokens));
+  }
+  return args;
+}
+
+/** Env vars that must NEVER reach the claude-cli child. This repo ships
+ *  .env.example and depends on dotenv — if an Anthropic API key or another
+ *  provider's credentials leak into the child's environment, Claude Code
+ *  prefers the key over OAuth and silently switches the user off their
+ *  subscription onto metered per-token billing, which is exactly what was
+ *  declined when choosing this provider. Matched by prefix so this stays
+ *  effective even as new *_API_KEY-shaped vars are added elsewhere. */
+const CLAUDE_CLI_ENV_DENYLIST_PREFIXES = [
+  'ANTHROPIC_', 'CLAUDE_CODE_USE_', 'AWS_', 'GOOGLE_', 'GEMINI_', 'OPENAI_',
+  'DEEPSEEK_', 'OPENROUTER_', 'AUTHORCLAW_',
+];
+
+/** Env vars the OS/OAuth login genuinely depends on. OAuth credentials for
+ *  the `claude.ai` login are resolved relative to the user's profile, so
+ *  stripping these would break authentication, not just "clean up" the env. */
+const CLAUDE_CLI_ENV_ALLOWLIST = [
+  'PATH', 'Path', 'SystemRoot', 'windir', 'ComSpec', 'TEMP', 'TMP',
+  'USERPROFILE', 'HOME', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+  'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS',
+  'LANG', 'LC_ALL', 'USERNAME', 'COMPUTERNAME',
+];
+
+/**
+ * Builds a sanitized environment for the claude-cli child: an explicit
+ * allowlist of what the OS and OAuth login need, then a denylist pass over
+ * whatever made it through (belt-and-braces against a name collision).
+ */
+export function buildClaudeCliEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of CLAUDE_CLI_ENV_ALLOWLIST) {
+    const v = parentEnv[key];
+    if (v !== undefined) env[key] = v;
+  }
+  for (const key of Object.keys(env)) {
+    if (CLAUDE_CLI_ENV_DENYLIST_PREFIXES.some(p => key.toUpperCase().startsWith(p))) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+/** Dedicated scratch space, entirely outside the workspace directory. The
+ *  workspace is a user document tree — often OneDrive/Dropbox-synced on
+ *  Windows — and these temp files hold the author's unpublished manuscript
+ *  text (soul + book bible + memory), so they don't belong there. */
+const CLAUDE_CLI_SCRATCH_DIR = join(tmpdir(), 'authoragent-claude-cli');
+/** Empty, dedicated cwd for the child. Claude Code auto-discovers CLAUDE.md
+ *  and project context from its working directory — an empty dir means
+ *  there's nothing to discover regardless of whether --setting-sources ""
+ *  behaves as documented, and it can't wander into AuthorAgent's own source
+ *  tree the way it did when the child inherited the gateway's cwd (this was
+ *  the actual mechanism behind the error_max_turns failures). */
+const CLAUDE_CLI_CWD_DIR = join(CLAUDE_CLI_SCRATCH_DIR, 'cwd');
 
 /**
  * The CLI's `--output-format json` shape isn't a versioned public contract —
@@ -308,8 +632,39 @@ export class AIRouter {
   // again in initialize() in case config was reloaded/reinitialized.
   private claudeCliSemaphore = new Semaphore(2);
   private claudeCliVersion: string | null = null;
+  private claudeCliBinCache: { bin: string } | null = null;
+  // Spacing/backoff between spawns — see CliPacer. Configured in initialize().
+  private claudeCliPacer = new CliPacer(1_500, 120_000, () => this.now());
+  // claude-cli and claude-cli-opus share one binary/token/rate-limiter — this
+  // is the shared health state both providers are gated on. 'auth' failures
+  // clear only via a successful lazy re-probe; 'quota' failures clear only
+  // once reopenAt passes (claude auth status reports loggedIn:true even
+  // while a usage cap is exhausted, so it cannot be used to clear a quota
+  // circuit — see classifyClaudeCliFailure).
+  private cliHealth: {
+    state: 'closed' | 'open';
+    reason: 'auth' | 'quota' | '';
+    message: string;
+    reopenAt: number;
+    lastProbeAt: number;
+  } = { state: 'closed', reason: '', message: '', reopenAt: 0, lastProbeAt: 0 };
 
-  constructor(config: any, vault: Vault, costs: CostTracker, workspaceDir?: string) {
+  // Injectable for tests (default: real Node implementations). Not exposed
+  // outside the constructor — production code always uses the defaults.
+  // execFile is deliberately NOT injected: checkClaudeCLI()'s two calls are
+  // simple, already-covered probes; spawn/now are what the streaming
+  // rewrite and its timeout logic actually need to be deterministically
+  // testable.
+  private spawnFn: typeof nodeSpawn;
+  private now: () => number;
+
+  constructor(
+    config: any,
+    vault: Vault,
+    costs: CostTracker,
+    workspaceDir?: string,
+    deps?: { spawn?: typeof nodeSpawn; now?: () => number }
+  ) {
     this.config = config;
     this.vault = vault;
     this.costs = costs;
@@ -320,6 +675,8 @@ export class AIRouter {
       this.modelConfig = new ModelConfig(workspaceDir);
     }
     this.claudeCliSemaphore.setMax(this.config?.['claude-cli']?.maxConcurrent ?? 2);
+    this.spawnFn = deps?.spawn ?? nodeSpawn;
+    this.now = deps?.now ?? Date.now;
   }
 
   /**
@@ -510,6 +867,11 @@ export class AIRouter {
       // Re-read maxConcurrent in case config changed since construction
       // (reinitialize() runs this again without recreating the router).
       this.claudeCliSemaphore.setMax(this.config['claude-cli']?.maxConcurrent ?? 2);
+      this.claudeCliPacer.configure(
+        this.config['claude-cli']?.minSpawnGapMs ?? 1_500,
+        this.config['claude-cli']?.maxBackoffMs ?? 120_000
+      );
+      await this.ensureClaudeCliScratchDirs();
 
       const probe = await this.checkClaudeCLI();
       if (probe.available) {
@@ -541,6 +903,12 @@ export class AIRouter {
           costPer1kInput: 0,
           costPer1kOutput: 0,
         });
+
+        // Fire-and-forget: don't delay startup on this, but do log its
+        // outcome. See verifyClaudeCliHardening's doc comment for why this
+        // exists — the CLI silently ignores unknown flags, so this is the
+        // only way to catch a future release quietly breaking the hardening.
+        this.verifyClaudeCliHardening().catch(() => {});
       } else {
         log.warn(`claude-cli unavailable: ${probe.reason}`);
       }
@@ -590,6 +958,226 @@ export class AIRouter {
     }
 
     return { available: true, version };
+  }
+
+  /**
+   * Create the claude-cli scratch directories if missing, and sweep any
+   * leftover temp system-prompt files older than an hour (crash residue
+   * from a prior run — normal cleanup is try/finally per call, this is only
+   * the backstop for when that couldn't run).
+   */
+  private async ensureClaudeCliScratchDirs(): Promise<void> {
+    try {
+      await mkdir(CLAUDE_CLI_SCRATCH_DIR, { recursive: true });
+      await mkdir(CLAUDE_CLI_CWD_DIR, { recursive: true });
+      const entries = await readdir(CLAUDE_CLI_SCRATCH_DIR).catch(() => [] as string[]);
+      const cutoff = Date.now() - 60 * 60 * 1000;
+      for (const name of entries) {
+        if (name === 'cwd') continue;
+        const p = join(CLAUDE_CLI_SCRATCH_DIR, name);
+        try {
+          const s = await stat(p);
+          if (s.isFile() && s.mtimeMs < cutoff) await unlink(p).catch(() => {});
+        } catch {
+          // Gone already, or not a file we can stat — ignore either way.
+        }
+      }
+    } catch (err: any) {
+      log.warn(`[claude-cli] could not prepare scratch dir ${CLAUDE_CLI_SCRATCH_DIR}: ${err?.message || err}`);
+    }
+  }
+
+  /**
+   * Resolve the real claude CLI binary, preferring a native install over any
+   * shim. On this platform, `spawn('claude')` resolves via PATH to whichever
+   * comes first — often a package-manager SHIM (e.g. a chocolatey wrapper)
+   * that launches the real, much larger binary as its OWN child process.
+   * Killing the shim (our normal cleanup — see the #25629 workaround in
+   * runClaudeCliOnce) does not kill that grandchild: it keeps running,
+   * holds the temp system-prompt file open, and keeps consuming
+   * subscription quota. This was firing on every successful call. Cached
+   * after the first resolution since it can't change during a process's
+   * lifetime.
+   */
+  private async resolveClaudeCliBin(): Promise<{ bin: string }> {
+    if (this.claudeCliBinCache) return this.claudeCliBinCache;
+
+    const configured = this.config?.['claude-cli']?.binPath;
+    if (configured && existsSync(configured)) {
+      this.claudeCliBinCache = { bin: configured };
+      return this.claudeCliBinCache;
+    }
+    if (process.platform === 'win32') {
+      const nativeCandidate = join(homedir(), '.local', 'bin', 'claude.exe');
+      if (existsSync(nativeCandidate)) {
+        this.claudeCliBinCache = { bin: nativeCandidate };
+        return this.claudeCliBinCache;
+      }
+    }
+    // Fall back to ordinary PATH resolution (unchanged behavior). If this
+    // resolves to a wrapper/shim, config.ai['claude-cli'].binPath is the
+    // escape hatch to point at the real binary explicitly.
+    this.claudeCliBinCache = { bin: 'claude' };
+    return this.claudeCliBinCache;
+  }
+
+  /**
+   * Kill a claude-cli child, and on Windows kill its whole process tree —
+   * plain SIGTERM only terminates the immediate process, not a grandchild
+   * launched by a shim (see resolveClaudeCliBin). Fire-and-forget: this
+   * runs during cleanup, after the call has already resolved or rejected,
+   * so a failure here must never surface as a call failure.
+   */
+  private killClaudeCliProcess(child: import('node:child_process').ChildProcess): void {
+    if (child.killed || child.exitCode !== null) return;
+    if (process.platform === 'win32' && child.pid) {
+      execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], () => { /* best-effort */ });
+    } else {
+      child.kill('SIGTERM');
+    }
+  }
+
+  /** Writes the system prompt to a unique scratch file for --system-prompt-file.
+   *  Mode 0o600, never logged (only its length is — see runClaudeCliOnce). */
+  private async writeSystemPromptFile(content: string): Promise<string> {
+    const path = join(CLAUDE_CLI_SCRATCH_DIR, `${process.pid}-${Date.now()}-${randomUUID()}.txt`);
+    await writeFile(path, content, { encoding: 'utf8', mode: 0o600 });
+    return path;
+  }
+
+  /**
+   * Removes a temp system-prompt file, retrying briefly since on Windows an
+   * unlink of a file the (just-killed) child still has open can fail with
+   * EBUSY/EPERM rather than deferring like POSIX would. Never throws —
+   * cleanup failure must not fail the call; ensureClaudeCliScratchDirs's
+   * hourly sweep is the backstop for anything that never gets removed.
+   */
+  private async removeSystemPromptFile(path: string): Promise<void> {
+    const delays = [50, 150, 400];
+    for (let i = 0; i <= delays.length; i++) {
+      try {
+        await unlink(path);
+        return;
+      } catch (err: any) {
+        if (err?.code === 'ENOENT') return;
+        if (i === delays.length) {
+          log.warn(`[claude-cli] could not remove temp system-prompt file (will be swept later): ${path}`);
+          return;
+        }
+        await new Promise(r => setTimeout(r, delays[i]));
+      }
+    }
+  }
+
+  /**
+   * Returns a rejection message if the shared claude-cli/claude-cli-opus
+   * circuit is open, or null if the call may proceed. Checked BEFORE
+   * spawning — a known-broken transport should fail in milliseconds with an
+   * actionable message, not after a multi-minute timeout.
+   */
+  private checkClaudeCliCircuit(): string | null {
+    const h = this.cliHealth;
+    if (h.state === 'closed') return null;
+
+    const now = this.now();
+    if (h.reason === 'quota') {
+      if (now >= h.reopenAt) {
+        this.closeClaudeCliCircuit();
+        return null;
+      }
+      const mins = Math.ceil((h.reopenAt - now) / 60_000);
+      return `${h.message} (retry in ~${mins} min)`;
+    }
+
+    // auth: only a successful re-probe can clear this. Rate-limited to once
+    // a minute so a retry storm can't turn into a probe storm — and note a
+    // usage-cap exhaustion still reports loggedIn:true, so this path is
+    // only ever entered for genuine auth failures, never quota ones.
+    if (now - h.lastProbeAt > 60_000) {
+      h.lastProbeAt = now;
+      this.checkClaudeCLI()
+        .then(probe => {
+          if (probe.available) {
+            this.closeClaudeCliCircuit();
+            const cli = this.providers.get('claude-cli');
+            const opus = this.providers.get('claude-cli-opus');
+            if (cli) cli.available = true;
+            if (opus) opus.available = true;
+            log.info('[claude-cli] auth circuit cleared by lazy re-probe.');
+          }
+        })
+        .catch(() => { /* stays open; next call retries the probe after the cooldown */ });
+    }
+    return h.message;
+  }
+
+  private openClaudeCliCircuit(reason: 'auth' | 'quota', message: string, retryAfterMs?: number): void {
+    const alreadyOpenSameReason = this.cliHealth.state === 'open' && this.cliHealth.reason === reason;
+    this.cliHealth = {
+      state: 'open',
+      reason,
+      message,
+      reopenAt: reason === 'quota' ? this.now() + (retryAfterMs ?? 15 * 60_000) : 0,
+      lastProbeAt: this.cliHealth.lastProbeAt,
+    };
+    if (reason === 'auth') {
+      const cli = this.providers.get('claude-cli');
+      const opus = this.providers.get('claude-cli-opus');
+      if (cli) cli.available = false;
+      if (opus) opus.available = false;
+    }
+    if (!alreadyOpenSameReason) {
+      log.warn(`[claude-cli] circuit OPEN (${reason}): ${message}`);
+    }
+  }
+
+  private closeClaudeCliCircuit(): void {
+    if (this.cliHealth.state === 'closed') return;
+    log.info(`[claude-cli] circuit CLOSED (was: ${this.cliHealth.reason})`);
+    this.cliHealth = { state: 'closed', reason: '', message: '', reopenAt: 0, lastProbeAt: this.cliHealth.lastProbeAt };
+  }
+
+  /**
+   * Startup canary — the mitigation for the CLI's silent-unknown-flag
+   * behavior. Runs one hardened call with a nonce embedded in the
+   * system-prompt file and asserts the reply contains it, which is the only
+   * way to actually prove --system-prompt-file is honored rather than
+   * silently ignored. Also warns (does not fail) if input_tokens comes back
+   * suspiciously high, which would mean the scaffolding-stripping flags
+   * (--tools "", --strict-mcp-config, etc.) stopped taking effect. Never
+   * takes the provider offline on a miss — a false-negative canary
+   * shouldn't remove the user's only configured transport.
+   */
+  private async verifyClaudeCliHardening(): Promise<void> {
+    if (this.config?.['claude-cli']?.canary === false) return;
+    const nonce = randomUUID().slice(0, 8);
+    try {
+      const result = await this.runClaudeCliOnce(
+        { id: 'claude-cli', name: 'canary', model: 'sonnet', tier: 'free', available: true, endpoint: 'local-cli', maxTokens: 100, costPer1kInput: 0, costPer1kOutput: 0 },
+        {
+          provider: 'claude-cli',
+          system: `You are a test harness. Reply with exactly: OK-${nonce}`,
+          messages: [{ role: 'user', content: 'ping' }],
+        },
+        this.now()
+      );
+      if (!result.text.includes(nonce)) {
+        log.warn(
+          `[claude-cli] startup canary: reply did not contain the expected nonce — ` +
+          `--system-prompt-file may not be honored by this CLI version. Reply: "${result.text.slice(0, 200)}"`
+        );
+      } else if (result.tokensUsed > 3_000) {
+        log.warn(
+          `[claude-cli] startup canary: input+output tokens=${result.tokensUsed}, expected well under 1,000. ` +
+          `The hardening flags (--tools "", --strict-mcp-config, etc.) may no longer be taking effect — ` +
+          `a CLI update may have changed flag names or behavior.`
+        );
+      } else {
+        log.info(`[claude-cli] startup canary passed (${result.tokensUsed} tokens).`);
+      }
+    } catch (err: any) {
+      log.warn(`[claude-cli] startup canary failed to run: ${err?.message || err}`);
+    }
   }
 
   /**
@@ -793,10 +1381,21 @@ export class AIRouter {
    * preferring free providers (Ollama, Gemini free tier) instead.
    */
   getFallbackProvider(currentId: string): AIProvider | null {
+    // claude-cli and claude-cli-opus are the SAME transport (one binary, one
+    // OAuth token, one rate limiter). A failed claude-cli call falling back
+    // to claude-cli-opus isn't a fallback, it's a retry of the same broken
+    // thing — confirmed in production: an auth failure on claude-cli was
+    // immediately followed by the identical auth failure on claude-cli-opus,
+    // doubling load on an already-unhealthy transport. Treat both ids as
+    // "current" so neither can be selected as the other's fallback.
+    const sameTransport = CLAUDE_CLI_TRANSPORT_IDS.has(currentId)
+      ? CLAUDE_CLI_TRANSPORT_IDS
+      : new Set([currentId]);
+
     // Explicit preferred fallback takes priority over the generic free/paid
     // heuristic below — e.g. "openai's live call just failed, go straight to
     // claude-cli" instead of whatever happens to be first by insertion order.
-    if (this.globalPreferredProviderFallback && this.globalPreferredProviderFallback !== currentId) {
+    if (this.globalPreferredProviderFallback && !sameTransport.has(this.globalPreferredProviderFallback)) {
       const configured = this.providers.get(this.globalPreferredProviderFallback);
       if (configured?.available) {
         return configured;
@@ -808,7 +1407,7 @@ export class AIRouter {
     const freeProviders: AIProvider[] = [];
     const paidProviders: AIProvider[] = [];
     for (const [id, provider] of this.providers) {
-      if (id === currentId || !provider.available) continue;
+      if (sameTransport.has(id) || !provider.available) continue;
       if (provider.tier === 'free') freeProviders.push(provider);
       else paidProviders.push(provider);
     }
@@ -1087,162 +1686,178 @@ export class AIRouter {
   //
   // CAVEATS:
   //  - Claude Code's rate limits/usage caps are tuned for interactive coding
-  //    sessions, not a pipeline firing 20-30 chapter-length calls per book.
-  //    Keep maxConcurrent low (config.ai['claude-cli'].maxConcurrent) and
-  //    expect throttling on long "Full Book" runs.
+  //    sessions, not a pipeline firing hundreds of calls per book. Keep
+  //    maxConcurrent low (config.ai['claude-cli'].maxConcurrent) — the
+  //    CliPacer below adds spacing/backoff on top of that, and the shared
+  //    circuit breaker fails fast instead of retrying into a known-broken
+  //    transport.
   //  - Single-shot only: `claude -p` isn't a multi-turn chat API, so the
   //    message history below is flattened into one prompt.
-  //  - No thinking-budget passthrough — Claude Code manages its own
-  //    reasoning internally; request.thinking is accepted but ignored here.
+  //  - This is a NON-agentic invocation: --tools "" disables all tool
+  //    access, so AuthorAgent's own context injection is the only context
+  //    the model gets. That's deliberate — see buildClaudeCliArgs's doc
+  //    comment for why (75x-207x fewer tokens per call than an agentic
+  //    invocation, measured).
   private async completeClaudeCode(
     provider: AIProvider,
     request: CompletionRequest
   ): Promise<CompletionResponse> {
-    return this.claudeCliSemaphore.run(() => this.runClaudeCliOnce(provider, request));
+    const circuitMessage = this.checkClaudeCliCircuit();
+    if (circuitMessage) {
+      throw new ClaudeCliError(`Claude Code CLI unavailable: ${circuitMessage}`, this.cliHealth.reason || 'transient');
+    }
+
+    const enqueuedAt = this.now();
+    await this.claudeCliPacer.waitTurn();
+
+    try {
+      const queueTimeoutMs = this.config?.['claude-cli']?.queueWaitTimeoutMs ?? 600_000;
+      const result = await this.claudeCliSemaphore.run(
+        () => this.runClaudeCliOnce(provider, request, enqueuedAt),
+        { queueTimeoutMs }
+      );
+      this.claudeCliPacer.recordSuccess();
+      return result;
+    } catch (err: any) {
+      const kind: CliFailureKind = err instanceof ClaudeCliError ? err.kind : 'transient';
+      if (kind === 'auth') {
+        this.openClaudeCliCircuit('auth', err.message);
+      } else if (kind === 'quota') {
+        this.openClaudeCliCircuit('quota', err.message, err.retryAfterMs);
+        this.claudeCliPacer.recordFailure();
+      } else {
+        this.claudeCliPacer.recordFailure();
+      }
+      throw err;
+    }
   }
 
   /**
-   * Runs `claude -p` in STREAMING mode and times it out on INACTIVITY, not
-   * total duration.
+   * Runs one hardened `claude -p` invocation in STREAMING mode, timing out
+   * on INACTIVITY rather than total duration.
    *
-   * Why: output-heavy tasks (full chapter drafts, 20-30 chapter outlines —
-   * up to TASK_OUTPUT_BUDGET's 16384 tokens) can legitimately take 5-10+
-   * minutes of steady token production through the CLI wrapper. A flat
-   * overall-duration timeout (previously 120s, then 300s) can't distinguish
-   * "still working, just slow" from "genuinely stuck" — it just kills
-   * whichever one happens to still be running when the clock runs out.
-   * Measured in production: one 24K-char-prompt call legitimately took
-   * 296.7s (just under the old 300s cap); a 20K-char-prompt call was killed
-   * at exactly 300s while (per this same logging) still producing output.
+   * Why streaming: output-heavy tasks (full chapter drafts, 20-30 chapter
+   * outlines) can legitimately take 5-10+ minutes of steady token
+   * production. A flat overall-duration timeout can't distinguish "still
+   * working, just slow" from "genuinely stuck" — it just kills whichever
+   * one happens to still be running when the clock runs out. This is a real
+   * regression that shipped once already: `--output-format stream-json`
+   * WITHOUT `--include-partial-messages` does not stream tokens at all — it
+   * emits one JSON object per COMPLETE message (init, then total silence
+   * for the entire generation, then the assistant message, then result). An
+   * inactivity timer built on that alone is a total-duration timeout in
+   * disguise. `--include-partial-messages` is what makes stdout activity a
+   * real proxy for "is it still working."
    *
-   * The fix: `--output-format stream-json` emits one JSON object per line as
-   * the response is generated. We track the last time ANY data arrived and
-   * only kill the process if that goes quiet for `inactivityTimeoutMs` —
-   * so a slow-but-steady multi-minute generation is never killed early, but
-   * a genuine hang (no bytes at all) is caught quickly. `maxTimeoutMs` is a
-   * separate, generous absolute backstop against a truly runaway call.
-   *
-   * We also do NOT wait for the child process to exit naturally: resolve as
-   * soon as the `{"type":"result",...}` event is seen, then kill the
-   * process ourselves. This works around a confirmed upstream bug
+   * We do NOT wait for the child process to exit naturally: resolve as soon
+   * as the `{"type":"result",...}` event is seen, then kill the process
+   * ourselves. This works around a confirmed upstream bug
    * (anthropics/claude-code#25629) where stream-json mode can hang
    * indefinitely *after* emitting the result event instead of exiting.
+   *
+   * `enqueuedAt` (timestamp from before the semaphore was acquired) lets us
+   * log actual queue-wait time — previously invisible, now the first thing
+   * in the spawn log line.
    */
   private async runClaudeCliOnce(
     provider: AIProvider,
-    request: CompletionRequest
+    request: CompletionRequest,
+    enqueuedAt: number
   ): Promise<CompletionResponse> {
+    if (!isSafeClaudeCliModel(provider.model)) {
+      throw new ClaudeCliError(
+        `Refusing to spawn claude-cli with a suspicious model value: "${provider.model}".`,
+        'fatal'
+      );
+    }
+
     const transcript = request.messages
       .map(m => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
       .join('\n\n');
-    const prompt = `${request.system}\n\n${transcript}`;
 
-    const inactivityTimeoutMs = this.config?.['claude-cli']?.inactivityTimeoutMs ?? 90_000;
-    const maxTimeoutMs = this.config?.['claude-cli']?.maxTimeoutMs ?? 900_000;
+    const lengthDirective = deriveLengthDirective(request.maxTokens);
+    const systemPromptContent = lengthDirective ? `${request.system}${lengthDirective}` : request.system;
+    const maxThinkingTokens = mapThinkingToMaxThinkingTokens(request.thinking);
 
-    const startedAt = Date.now();
+    const cfg = this.config?.['claude-cli'] ?? {};
+    const firstTokenBaseMs: number = cfg.firstTokenTimeoutMs ?? 120_000;
+    const firstTokenCeilingMs: number = cfg.firstTokenCeilingMs ?? 420_000;
+    const inactivityTimeoutMs: number = cfg.inactivityTimeoutMs ?? 60_000;
+    const maxTimeoutMs: number = cfg.maxTimeoutMs ?? 900_000;
+    const totalChars = systemPromptContent.length + transcript.length;
+    const firstTokenBudgetMs = computeFirstTokenBudgetMs(totalChars, firstTokenBaseMs, firstTokenCeilingMs);
+
+    const queueWaitMs = this.now() - enqueuedAt;
+    const startedAt = this.now();
+
+    const { bin } = await this.resolveClaudeCliBin();
+    const args = buildClaudeCliArgs({
+      model: provider.model,
+      systemPromptFile: '', // placeholder — filled in below once the file exists
+      maxTurns: 1,
+      maxThinkingTokens,
+    });
+
+    const systemPromptFile = await this.writeSystemPromptFile(systemPromptContent);
+    // Patch the real path into argv now that the file exists (buildClaudeCliArgs
+    // is a pure function and can't await the write itself).
+    const systemPromptFileIdx = args.indexOf('--system-prompt-file') + 1;
+    args[systemPromptFileIdx] = systemPromptFile;
+
     log.info(
-      `[claude-cli] spawning: model=${provider.model} promptChars=${prompt.length} ` +
-      `inactivityTimeoutMs=${inactivityTimeoutMs} maxTimeoutMs=${maxTimeoutMs} ` +
-      `activeSemaphoreSlots=${this.claudeCliSemaphore.debugState()}`
+      `[claude-cli] spawning: model=${provider.model} promptChars=${transcript.length} ` +
+      `systemChars=${systemPromptContent.length} queueWaitMs=${queueWaitMs} ` +
+      `firstTokenBudgetMs=${Math.round(firstTokenBudgetMs)} inactivityTimeoutMs=${inactivityTimeoutMs} ` +
+      `maxTimeoutMs=${maxTimeoutMs} activeSemaphoreSlots=${this.claudeCliSemaphore.debugState()}`
     );
 
-    return new Promise<CompletionResponse>((resolve, reject) => {
-      // spawn (not execFile) — no shell interpolation, same as before. We
-      // need direct stream access here rather than a promise-on-exit, so we
-      // can react to data as it arrives instead of waiting for the process
-      // to finish (which, per the bug above, may never happen naturally).
-      //
-      // --max-turns: generous, not 1. AuthorAgent's system prompt has the
-      // model check Book Bible / style guide / voice profile / outline
-      // before writing (write skill) — each of those can be a tool call,
-      // consuming a "turn" before the actual text response. A cap of 1
-      // aborted those with subtype "error_max_turns" and an empty result
-      // (caught live: audit log showed exactly this). 12 leaves comfortable
-      // room for that context-gathering while still bounding a genuinely
-      // runaway agentic loop.
-      const child = spawn(
-        'claude',
-        ['-p', '--output-format', 'stream-json', '--verbose', '--max-turns', '12', '--model', provider.model],
-        { stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-
-      let stdoutBuf = '';
-      let stderrBuf = '';
-      let settled = false;
-      let lastActivity = Date.now();
-
-      const finish = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearInterval(inactivityCheck);
-        clearTimeout(hardCeiling);
-        fn();
-        if (!child.killed) child.kill('SIGTERM');
-      };
-
-      const inactivityCheck = setInterval(() => {
-        const idleMs = Date.now() - lastActivity;
-        if (idleMs > inactivityTimeoutMs) {
-          log.warn(`[claude-cli] no output for ${Math.round(idleMs / 1000)}s — treating as stuck, killing.`);
-          finish(() => reject(new Error(
-            `Claude Code CLI: no output for ${Math.round(inactivityTimeoutMs / 1000)}s (likely stuck) ` +
-            `after ${Date.now() - startedAt}ms total.`
-          )));
-        }
-      }, 5_000);
-
-      const hardCeiling = setTimeout(() => {
-        finish(() => reject(new Error(
-          `Claude Code CLI call exceeded the ${Math.round(maxTimeoutMs / 1000)}s hard ceiling — ` +
-          `still producing output, but this is taking unreasonably long.`
-        )));
-      }, maxTimeoutMs);
-
-      child.on('error', (err: any) => {
-        finish(() => {
-          if (err?.code === 'ENOENT') {
-            reject(new Error(`Claude Code CLI not found. Install it and run "claude login".`));
-          } else {
-            reject(new Error(`Claude Code CLI spawn error: ${err?.message || err}`));
-          }
+    try {
+      return await new Promise<CompletionResponse>((resolve, reject) => {
+        const child = this.spawnFn(bin, args, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          cwd: CLAUDE_CLI_CWD_DIR,
+          env: buildClaudeCliEnv(process.env),
         });
-      });
 
-      child.stdout.on('data', (chunk: Buffer) => {
-        lastActivity = Date.now();
-        stdoutBuf += chunk.toString('utf-8');
-        let idx: number;
-        while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
-          const line = stdoutBuf.slice(0, idx).trim();
-          stdoutBuf = stdoutBuf.slice(idx + 1);
-          if (!line) continue;
+        let stderrBuf = '';
+        let settled = false;
+        let sawFirstByte = false;
+        let lastStdoutActivity = this.now();
+
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearInterval(watchdog);
+          clearTimeout(hardCeiling);
+          fn();
+          this.killClaudeCliProcess(child);
+        };
+
+        const reader = createNdjsonLineReader((line) => {
           let evt: any;
           try {
             evt = JSON.parse(line);
           } catch {
-            continue; // not every line is JSON we care about; skip silently
+            return; // not every line is JSON we care about; skip silently
           }
-          if (evt?.type !== 'result') continue;
+          if (evt?.type !== 'result') return;
 
           const text = evt?.result ?? '';
           log.info(
-            `[claude-cli] result event after ${Date.now() - startedAt}ms: ` +
+            `[claude-cli] result event after ${this.now() - startedAt}ms: ` +
             `is_error=${evt?.is_error} subtype=${evt?.subtype} numTurns=${evt?.num_turns} chars=${text.length}` +
             (evt?.is_error && !text ? ` (empty result on error — subtype is the only detail available)` : '')
           );
+          const parsed = parseClaudeCliResultEvent(evt);
           finish(() => {
-            if (evt?.is_error) {
-              reject(new Error(`Claude Code CLI error: ${text || evt?.subtype || 'unknown error'}`));
-              return;
-            }
-            if (!text) {
-              reject(new Error(`Claude Code CLI returned an empty result.`));
+            if (!parsed.ok) {
+              const classified = classifyClaudeCliFailure({ resultText: parsed.error, stderr: stderrBuf });
+              reject(new ClaudeCliError(`Claude Code CLI error: ${parsed.error}`, classified.kind, classified.retryAfterMs));
               return;
             }
             resolve({
-              text,
-              tokensUsed: (evt?.usage?.input_tokens ?? 0) + (evt?.usage?.output_tokens ?? 0),
+              text: parsed.text,
+              tokensUsed: parsed.tokensUsed,
               // Rides the subscription — no separate metered cost to the
               // user, even though the CLI's own JSON includes an internal
               // total_cost_usd estimate.
@@ -1250,40 +1865,98 @@ export class AIRouter {
               provider: provider.id, // 'claude-cli' or 'claude-cli-opus'
             });
           });
-        }
-      });
+        });
 
-      child.stderr.on('data', (chunk: Buffer) => {
-        lastActivity = Date.now();
-        stderrBuf += chunk.toString('utf-8');
-      });
+        const watchdog = setInterval(() => {
+          const now = this.now();
+          if (!sawFirstByte) {
+            if (now - startedAt > firstTokenBudgetMs) {
+              finish(() => reject(new ClaudeCliError(
+                `Claude Code CLI: no output for ${Math.round((now - startedAt) / 1000)}s waiting for the ` +
+                `first response byte (budget ${Math.round(firstTokenBudgetMs / 1000)}s for a ${totalChars}-char prompt).`
+              )));
+            }
+            return;
+          }
+          if (now - lastStdoutActivity > inactivityTimeoutMs) {
+            log.warn(`[claude-cli] no stdout for ${Math.round((now - lastStdoutActivity) / 1000)}s mid-generation — treating as stuck, killing.`);
+            finish(() => reject(new ClaudeCliError(
+              `Claude Code CLI: no output for ${Math.round(inactivityTimeoutMs / 1000)}s mid-generation ` +
+              `(likely stuck) after ${now - startedAt}ms total.`
+            )));
+          }
+        }, 5_000);
 
-      // Only reached if the process exits WITHOUT us ever seeing a result
-      // event (crash, auth failure before any output, killed by something
-      // other than our own finish()) — the normal success/error paths above
-      // already resolved/rejected and killed the child themselves.
-      child.on('close', (code, signal) => {
-        if (settled) return;
-        settled = true;
-        clearInterval(inactivityCheck);
-        clearTimeout(hardCeiling);
-        log.warn(
-          `[claude-cli] exited (code=${code}, signal=${signal}) after ${Date.now() - startedAt}ms ` +
-          `without a result event. stderr="${stderrBuf.slice(0, 1500)}"`
-        );
-        const stderrLower = stderrBuf.toLowerCase();
-        if (stderrLower.includes('not logged in') || stderrLower.includes('authentication')) {
-          reject(new Error(`Claude Code CLI is not authenticated. Run "claude logout" then "claude login" first.`));
-          return;
-        }
-        reject(new Error(
-          `Claude Code CLI exited (code=${code}, signal=${signal}) without producing a result. ` +
-          `stderr="${stderrBuf.slice(0, 500)}"`
-        ));
-      });
+        const hardCeiling = setTimeout(() => {
+          finish(() => reject(new ClaudeCliError(
+            `Claude Code CLI call exceeded the ${Math.round(maxTimeoutMs / 1000)}s hard ceiling — ` +
+            `still producing output, but this is taking unreasonably long.`
+          )));
+        }, maxTimeoutMs);
 
-      child.stdin!.end(prompt);
-    });
+        child.on('error', (err: any) => {
+          finish(() => {
+            if (err?.code === 'ENOENT') {
+              reject(new ClaudeCliError(`Claude Code CLI not found. Install it and run "claude login".`, 'fatal'));
+            } else {
+              reject(new ClaudeCliError(`Claude Code CLI spawn error: ${err?.message || err}`));
+            }
+          });
+        });
+
+        // Guards against an unhandled EPIPE: a large prompt plus an early
+        // child exit (bad flag, crash before reading stdin) can fail the
+        // write after the OS pipe buffer fills. Without this listener, an
+        // 'error' event on the stdin stream throws and can crash the whole
+        // gateway process — the 'close'/result-event paths above already
+        // cover reporting the actual failure; this only stops the write
+        // itself from becoming an uncaught exception.
+        child.stdin!.on('error', (err: any) => {
+          log.warn(`[claude-cli] stdin write error (likely early child exit): ${err?.message || err}`);
+        });
+
+        child.stdout.on('data', (chunk: Buffer) => {
+          sawFirstByte = true;
+          lastStdoutActivity = this.now();
+          reader.push(chunk.toString('utf-8'));
+        });
+
+        child.stderr.on('data', (chunk: Buffer) => {
+          // Deliberately does NOT feed the watchdog. Chatty stderr was
+          // previously the ONLY thing keeping the (non-streaming) inactivity
+          // timer alive during long generations — accidental life support
+          // for a timer that was otherwise a total-duration timeout in
+          // disguise. Real progress is now measured on stdout only, which
+          // genuinely streams thanks to --include-partial-messages.
+          stderrBuf += chunk.toString('utf-8');
+        });
+
+        // Only reached if the process exits WITHOUT us ever seeing a result
+        // event (crash, auth failure before any output, killed by something
+        // other than our own finish()) — the normal success/error paths
+        // above already resolved/rejected and killed the child themselves.
+        child.on('close', (code, signal) => {
+          if (settled) return;
+          settled = true;
+          clearInterval(watchdog);
+          clearTimeout(hardCeiling);
+          log.warn(
+            `[claude-cli] exited (code=${code}, signal=${signal}) after ${this.now() - startedAt}ms ` +
+            `without a result event. stderr="${stderrBuf.slice(0, 1500)}"`
+          );
+          const classified = classifyClaudeCliFailure({ stderr: stderrBuf });
+          reject(new ClaudeCliError(
+            `Claude Code CLI exited (code=${code}, signal=${signal}) without producing a result. ${classified.message}`,
+            classified.kind,
+            classified.retryAfterMs
+          ));
+        });
+
+        child.stdin!.end(transcript);
+      });
+    } finally {
+      await this.removeSystemPromptFile(systemPromptFile);
+    }
   }
 
   // ── OpenAI-compatible (OpenAI, DeepSeek) ──
