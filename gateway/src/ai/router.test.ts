@@ -2,7 +2,22 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { AIRouter, getRecommendedThinking, getOutputBudget } from './router.js';
+import { EventEmitter } from 'node:events';
+import {
+  AIRouter,
+  getRecommendedThinking,
+  getOutputBudget,
+  buildClaudeCliArgs,
+  buildClaudeCliEnv,
+  classifyClaudeCliFailure,
+  parseClaudeCliResultEvent,
+  createNdjsonLineReader,
+  computeFirstTokenBudgetMs,
+  deriveLengthDirective,
+  mapThinkingToMaxThinkingTokens,
+  isSafeClaudeCliModel,
+  ClaudeCliError,
+} from './router.js';
 import { Vault } from '../security/vault.js';
 import { CostTracker } from '../services/costs.js';
 
@@ -411,5 +426,532 @@ describe('AIRouter provider selection and tiering (mocked vault/network)', () =>
       expect(stats2.hits).toBe(1);
       expect(stats2.savedTokens).toBeGreaterThan(0);
     });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// claude-cli hardening — pure functions
+// ═══════════════════════════════════════════════════════════
+//
+// This provider had ZERO test coverage despite being the live default in
+// production, and the specific failure that motivated this rewrite
+// (stream-json not actually streaming without --include-partial-messages,
+// making the "inactivity" watchdog a total-duration timeout in disguise)
+// shipped without any test catching it. These cover the extracted pure
+// logic directly; the streaming/timeout state machine itself is covered
+// further below via dependency-injected spawn.
+
+describe('buildClaudeCliArgs', () => {
+  it('builds the exact hardened, non-agentic argv', () => {
+    const args = buildClaudeCliArgs({ model: 'sonnet', systemPromptFile: '/tmp/sp.txt' });
+    expect(args).toEqual([
+      '-p',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--model', 'sonnet',
+      '--system-prompt-file', '/tmp/sp.txt',
+      '--tools', '',
+      '--disable-slash-commands',
+      '--strict-mcp-config',
+      '--setting-sources', '',
+      '--no-session-persistence',
+      '--max-turns', '1',
+    ]);
+  });
+
+  it('never includes --bare or --dangerously-skip-permissions (would break OAuth / silently widen tool access)', () => {
+    const args = buildClaudeCliArgs({ model: 'opus', systemPromptFile: '/tmp/sp.txt', maxTurns: 12 });
+    expect(args).not.toContain('--bare');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(args).not.toContain('--system-prompt'); // the (different) non-file flag
+  });
+
+  it('--tools is never the last argv element (it is variadic and would swallow whatever follows)', () => {
+    const args = buildClaudeCliArgs({ model: 'sonnet', systemPromptFile: '/tmp/sp.txt' });
+    const toolsIdx = args.indexOf('--tools');
+    expect(toolsIdx).toBeGreaterThanOrEqual(0);
+    expect(toolsIdx).toBeLessThan(args.length - 2); // '' plus at least one more flag after it
+  });
+
+  it('includes --max-thinking-tokens only when a thinking budget is given', () => {
+    const withThinking = buildClaudeCliArgs({ model: 'sonnet', systemPromptFile: '/tmp/sp.txt', maxThinkingTokens: 4096 });
+    expect(withThinking).toContain('--max-thinking-tokens');
+    expect(withThinking[withThinking.indexOf('--max-thinking-tokens') + 1]).toBe('4096');
+
+    const without = buildClaudeCliArgs({ model: 'sonnet', systemPromptFile: '/tmp/sp.txt' });
+    expect(without).not.toContain('--max-thinking-tokens');
+  });
+
+  it('respects a custom maxTurns', () => {
+    const args = buildClaudeCliArgs({ model: 'sonnet', systemPromptFile: '/tmp/sp.txt', maxTurns: 3 });
+    expect(args[args.indexOf('--max-turns') + 1]).toBe('3');
+  });
+});
+
+describe('buildClaudeCliEnv', () => {
+  it('strips credential-shaped vars so the child can never silently switch to metered API billing', () => {
+    const env = buildClaudeCliEnv({
+      ANTHROPIC_API_KEY: 'sk-should-not-leak',
+      ANTHROPIC_BASE_URL: 'https://evil.example.com',
+      GEMINI_API_KEY: 'g-key',
+      OPENAI_API_KEY: 'o-key',
+      AUTHORCLAW_VAULT_KEY: 'vault-secret',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      PATH: 'C:\\Windows\\System32',
+    });
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(env.GEMINI_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.AUTHORCLAW_VAULT_KEY).toBeUndefined();
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+  });
+
+  it('keeps the vars OAuth/process startup depends on (regression guard: never break login)', () => {
+    const env = buildClaudeCliEnv({
+      USERPROFILE: 'C:\\Users\\test',
+      HOME: '/home/test',
+      APPDATA: 'C:\\Users\\test\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\test\\AppData\\Local',
+      PATH: 'C:\\Windows\\System32',
+      TEMP: 'C:\\Temp',
+    });
+    expect(env.USERPROFILE).toBe('C:\\Users\\test');
+    expect(env.HOME).toBe('/home/test');
+    expect(env.APPDATA).toBe('C:\\Users\\test\\AppData\\Roaming');
+    expect(env.LOCALAPPDATA).toBe('C:\\Users\\test\\AppData\\Local');
+    expect(env.PATH).toBe('C:\\Windows\\System32');
+    expect(env.TEMP).toBe('C:\\Temp');
+  });
+
+  it('omits anything not on the explicit allowlist, even if harmless-looking', () => {
+    const env = buildClaudeCliEnv({ RANDOM_UNRELATED_VAR: 'x', PATH: 'y' });
+    expect(env.RANDOM_UNRELATED_VAR).toBeUndefined();
+    expect(env.PATH).toBe('y');
+  });
+});
+
+describe('isSafeClaudeCliModel', () => {
+  it('accepts normal model slugs/aliases', () => {
+    expect(isSafeClaudeCliModel('sonnet')).toBe(true);
+    expect(isSafeClaudeCliModel('claude-sonnet-4-5-20250929')).toBe(true);
+    expect(isSafeClaudeCliModel('opus')).toBe(true);
+  });
+
+  it('rejects a model value containing shell/argv-hostile characters', () => {
+    expect(isSafeClaudeCliModel('sonnet && calc')).toBe(false);
+    expect(isSafeClaudeCliModel('sonnet; rm -rf /')).toBe(false);
+    expect(isSafeClaudeCliModel('sonnet\n--dangerously-skip-permissions')).toBe(false);
+    expect(isSafeClaudeCliModel('')).toBe(false);
+  });
+});
+
+describe('classifyClaudeCliFailure', () => {
+  it('classifies auth failures and always returns the logout/login remedy', () => {
+    const r = classifyClaudeCliFailure({ resultText: 'API Error: 401 OAuth access token has expired.' });
+    expect(r.kind).toBe('auth');
+    expect(r.message).toContain('claude logout && claude login');
+  });
+
+  it('classifies quota/rate-limit failures and parses a reset deadline when present', () => {
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const r = classifyClaudeCliFailure({ resultText: `Usage limit reached. Resets at ${future}.` });
+    expect(r.kind).toBe('quota');
+    expect(r.retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it('defaults quota retryAfterMs to 15 minutes when no deadline is parseable', () => {
+    const r = classifyClaudeCliFailure({ stderr: 'rate limit exceeded' });
+    expect(r.kind).toBe('quota');
+    expect(r.retryAfterMs).toBe(15 * 60_000);
+  });
+
+  it('classifies error_max_turns as fatal (should be impossible with --tools "" — a red flag if it recurs)', () => {
+    const r = classifyClaudeCliFailure({ resultText: 'error_max_turns' });
+    expect(r.kind).toBe('fatal');
+  });
+
+  it('falls back to transient for anything unrecognized', () => {
+    const r = classifyClaudeCliFailure({ resultText: 'some unexpected network blip' });
+    expect(r.kind).toBe('transient');
+  });
+
+  it('checks both resultText and stderr, not just one', () => {
+    const r = classifyClaudeCliFailure({ resultText: 'Command failed', stderr: 'not logged in' });
+    expect(r.kind).toBe('auth');
+  });
+});
+
+describe('parseClaudeCliResultEvent', () => {
+  it('parses a successful result event', () => {
+    const r = parseClaudeCliResultEvent({ type: 'result', is_error: false, result: 'hello', usage: { input_tokens: 10, output_tokens: 5 } });
+    expect(r).toEqual({ ok: true, text: 'hello', tokensUsed: 15 });
+  });
+
+  it('falls back to subtype when is_error is true and result text is empty', () => {
+    const r = parseClaudeCliResultEvent({ type: 'result', is_error: true, result: '', subtype: 'error_max_turns' });
+    expect(r).toEqual({ ok: false, error: 'error_max_turns' });
+  });
+
+  it('treats an empty, non-error result as a failure (never silently resolve with nothing)', () => {
+    const r = parseClaudeCliResultEvent({ type: 'result', is_error: false, result: '' });
+    expect(r.ok).toBe(false);
+  });
+
+  it('defaults tokensUsed to 0 when usage is missing entirely', () => {
+    const r = parseClaudeCliResultEvent({ type: 'result', is_error: false, result: 'x' });
+    expect(r).toEqual({ ok: true, text: 'x', tokensUsed: 0 });
+  });
+});
+
+describe('createNdjsonLineReader', () => {
+  it('emits each complete line and buffers a partial trailing line until it completes', () => {
+    const lines: string[] = [];
+    const reader = createNdjsonLineReader(l => lines.push(l));
+    reader.push('{"a":1}\n{"b":2}\n{"c"');
+    expect(lines).toEqual(['{"a":1}', '{"b":2}']);
+    reader.push(':3}\n');
+    expect(lines).toEqual(['{"a":1}', '{"b":2}', '{"c":3}']);
+  });
+
+  it('skips blank lines', () => {
+    const lines: string[] = [];
+    const reader = createNdjsonLineReader(l => lines.push(l));
+    reader.push('{"a":1}\n\n\n{"b":2}\n');
+    expect(lines).toEqual(['{"a":1}', '{"b":2}']);
+  });
+
+  it('handles a single result event arriving split across two chunks at an arbitrary byte offset', () => {
+    const lines: string[] = [];
+    const reader = createNdjsonLineReader(l => lines.push(l));
+    const full = '{"type":"result","result":"hello world"}\n';
+    reader.push(full.slice(0, 20));
+    reader.push(full.slice(20));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]).result).toBe('hello world');
+  });
+});
+
+describe('computeFirstTokenBudgetMs', () => {
+  it('returns exactly the base budget floor for a zero-length prompt', () => {
+    expect(computeFirstTokenBudgetMs(0, 120_000, 420_000)).toBe(120_000);
+  });
+
+  it('adds a small, proportionate amount for a small prompt (never drops below the base)', () => {
+    const result = computeFirstTokenBudgetMs(100, 120_000, 420_000);
+    expect(result).toBeGreaterThanOrEqual(120_000);
+    expect(result).toBeLessThan(120_100); // 100 chars * 0.3ms/char is negligible
+  });
+
+  it('scales up for a large prompt, clamped to the ceiling', () => {
+    // 600,000 chars * 0.3ms/char = 180,000ms added to a 120,000ms base -> 300,000ms, under the 420,000ms ceiling.
+    expect(computeFirstTokenBudgetMs(600_000, 120_000, 420_000)).toBe(300_000);
+  });
+
+  it('clamps at the ceiling for an extremely large prompt', () => {
+    expect(computeFirstTokenBudgetMs(5_000_000, 120_000, 420_000)).toBe(420_000);
+  });
+});
+
+describe('deriveLengthDirective', () => {
+  it('returns nothing for small/default output budgets (the CLI applies no cap, so padding a short task would be pure noise)', () => {
+    expect(deriveLengthDirective(undefined)).toBe('');
+    expect(deriveLengthDirective(4096)).toBe('');
+  });
+
+  it('appends a word-count directive for genuinely long-output tasks', () => {
+    const directive = deriveLengthDirective(16384);
+    expect(directive).toContain('substantial response');
+    expect(directive).toContain(String(Math.round(16384 * 0.75)));
+  });
+});
+
+describe('mapThinkingToMaxThinkingTokens', () => {
+  it('maps each level to its token budget', () => {
+    expect(mapThinkingToMaxThinkingTokens('low')).toBe(1024);
+    expect(mapThinkingToMaxThinkingTokens('medium')).toBe(4096);
+    expect(mapThinkingToMaxThinkingTokens('high')).toBe(16384);
+  });
+
+  it('returns undefined when no thinking level is requested', () => {
+    expect(mapThinkingToMaxThinkingTokens(undefined)).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// claude-cli hardening — streaming/timeout behavior via injected spawn
+// ═══════════════════════════════════════════════════════════
+//
+// Drives the actual private runClaudeCliOnce logic with a fake child
+// process (no real subprocess), so the result-event parsing, error
+// classification, and the #25629 no-natural-exit workaround are covered
+// without needing the real CLI installed/authenticated in CI.
+
+function makeFakeChild() {
+  const child: any = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = new EventEmitter();
+  child.stdin.end = vi.fn();
+  child.killed = false;
+  child.exitCode = null;
+  // Deliberately no .pid — keeps killClaudeCliProcess on the safe,
+  // assertable child.kill() path in tests instead of shelling out to a
+  // real `taskkill` against a made-up PID (which risks a same-run-time
+  // collision with an unrelated real process on the test machine).
+  child.kill = vi.fn(() => { child.killed = true; });
+  return child;
+}
+
+const FAKE_PROVIDER = {
+  id: 'claude-cli',
+  name: 'Claude Code (subscription)',
+  model: 'sonnet',
+  tier: 'free' as const,
+  available: true,
+  endpoint: 'local-cli',
+  maxTokens: 16384,
+  costPer1kInput: 0,
+  costPer1kOutput: 0,
+};
+
+describe('runClaudeCliOnce (streaming behavior, fake spawn)', () => {
+  let vaultDir: string;
+  let vault: Vault;
+  let costs: CostTracker;
+
+  beforeEach(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), 'authoragent-claudecli-test-'));
+    process.env.AUTHORCLAW_VAULT_KEY = 'test-router-key';
+    vault = new Vault(vaultDir);
+    await vault.initialize();
+    costs = new CostTracker({ dailyLimit: 5, monthlyLimit: 50 });
+  });
+
+  afterEach(async () => {
+    delete process.env.AUTHORCLAW_VAULT_KEY;
+    await rm(vaultDir, { recursive: true, force: true });
+  });
+
+  it('resolves with the parsed text/tokens on a successful result event, and kills the child', async () => {
+    const child = makeFakeChild();
+    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => child);
+    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+
+    const promise = (router as any).runClaudeCliOnce(
+      FAKE_PROVIDER,
+      { provider: 'claude-cli', system: 'sys', messages: [{ role: 'user', content: 'hi' }] },
+      Date.now()
+    );
+    await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalled());
+
+    child.stdout.emit('data', Buffer.from(
+      JSON.stringify({ type: 'result', is_error: false, result: 'hello', usage: { input_tokens: 10, output_tokens: 5 } }) + '\n'
+    ));
+
+    const result = await promise;
+    expect(result).toEqual({ text: 'hello', tokensUsed: 15, estimatedCost: 0, provider: 'claude-cli' });
+    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it('rejects with a classified ClaudeCliError on an is_error result event', async () => {
+    const child = makeFakeChild();
+    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => child);
+    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+
+    const promise = (router as any).runClaudeCliOnce(
+      FAKE_PROVIDER,
+      { provider: 'claude-cli', system: 'sys', messages: [{ role: 'user', content: 'hi' }] },
+      Date.now()
+    );
+    await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalled());
+
+    child.stdout.emit('data', Buffer.from(
+      JSON.stringify({ type: 'result', is_error: true, result: '', subtype: 'error_max_turns' }) + '\n'
+    ));
+
+    await expect(promise).rejects.toThrow(ClaudeCliError);
+    await expect(promise).rejects.toMatchObject({ kind: 'fatal' });
+  });
+
+  it('rejects when the child exits without ever producing a result event, classified from stderr', async () => {
+    const child = makeFakeChild();
+    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => child);
+    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+
+    const promise = (router as any).runClaudeCliOnce(
+      FAKE_PROVIDER,
+      { provider: 'claude-cli', system: 'sys', messages: [{ role: 'user', content: 'hi' }] },
+      Date.now()
+    );
+    await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalled());
+
+    child.stderr.emit('data', Buffer.from('Failed to authenticate. OAuth access token has expired.'));
+    child.emit('close', 1, null);
+
+    await expect(promise).rejects.toMatchObject({ kind: 'auth' });
+  });
+
+  it('rejects with a clear message when the binary is not found (ENOENT)', async () => {
+    const child = makeFakeChild();
+    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => child);
+    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+
+    const promise = (router as any).runClaudeCliOnce(
+      FAKE_PROVIDER,
+      { provider: 'claude-cli', system: 'sys', messages: [{ role: 'user', content: 'hi' }] },
+      Date.now()
+    );
+    await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalled());
+
+    child.emit('error', { code: 'ENOENT' });
+
+    await expect(promise).rejects.toThrow(/not found/i);
+  });
+
+  it('refuses to spawn with a suspicious model value instead of passing it through to argv', async () => {
+    const child = makeFakeChild();
+    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => child);
+    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+
+    const badProvider = { ...FAKE_PROVIDER, model: 'sonnet && calc' };
+    await expect(
+      (router as any).runClaudeCliOnce(
+        badProvider,
+        { provider: 'claude-cli', system: 'sys', messages: [{ role: 'user', content: 'hi' }] },
+        Date.now()
+      )
+    ).rejects.toThrow(/suspicious model/i);
+    expect(fakeSpawn).not.toHaveBeenCalled();
+  });
+
+  it('writes the system prompt to a temp file referenced in argv, and removes it after the call settles', async () => {
+    const child = makeFakeChild();
+    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => child);
+    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+
+    const promise = (router as any).runClaudeCliOnce(
+      FAKE_PROVIDER,
+      { provider: 'claude-cli', system: 'you are a test', messages: [{ role: 'user', content: 'hi' }] },
+      Date.now()
+    );
+    await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalled());
+
+    const args: string[] = fakeSpawn.mock.calls[0][1];
+    const filePath = args[args.indexOf('--system-prompt-file') + 1];
+    expect(filePath).toMatch(/authoragent-claude-cli/);
+    const { readFile, access } = await import('node:fs/promises');
+    await expect(readFile(filePath, 'utf8')).resolves.toBe('you are a test');
+
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'ok' }) + '\n'));
+    await promise;
+
+    await expect(access(filePath)).rejects.toThrow(); // cleaned up
+  });
+
+  it('two concurrent calls get distinct temp files, both cleaned up', async () => {
+    const child1 = makeFakeChild();
+    const child2 = makeFakeChild();
+    const children = [child1, child2];
+    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => children.shift());
+    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+
+    const p1 = (router as any).runClaudeCliOnce(
+      FAKE_PROVIDER, { provider: 'claude-cli', system: 'sys A', messages: [{ role: 'user', content: 'hi' }] }, Date.now()
+    );
+    const p2 = (router as any).runClaudeCliOnce(
+      FAKE_PROVIDER, { provider: 'claude-cli', system: 'sys B', messages: [{ role: 'user', content: 'hi' }] }, Date.now()
+    );
+    await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalledTimes(2));
+
+    const args1: string[] = fakeSpawn.mock.calls[0][1];
+    const args2: string[] = fakeSpawn.mock.calls[1][1];
+    const file1 = args1[args1.indexOf('--system-prompt-file') + 1];
+    const file2 = args2[args2.indexOf('--system-prompt-file') + 1];
+    expect(file1).not.toBe(file2);
+
+    child1.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'A' }) + '\n'));
+    child2.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'B' }) + '\n'));
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.text).toBe('A');
+    expect(r2.text).toBe('B');
+
+    const { access } = await import('node:fs/promises');
+    await expect(access(file1)).rejects.toThrow();
+    await expect(access(file2)).rejects.toThrow();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// getFallbackProvider — same-transport fix
+// ═══════════════════════════════════════════════════════════
+//
+// claude-cli and claude-cli-opus share one binary/token/rate-limiter.
+// Production logs showed a claude-cli auth failure immediately followed by
+// the identical failure on claude-cli-opus — the "fallback" was a retry of
+// the same broken transport. These insert synthetic provider entries
+// directly (bypassing the real CLI probe in initialize()) for a fast,
+// deterministic unit test.
+
+describe('getFallbackProvider (claude-cli same-transport fix)', () => {
+  let vaultDir: string;
+  let vault: Vault;
+  let costs: CostTracker;
+
+  beforeEach(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), 'authoragent-fallback-test-'));
+    process.env.AUTHORCLAW_VAULT_KEY = 'test-router-key';
+    vault = new Vault(vaultDir);
+    await vault.initialize();
+    costs = new CostTracker({ dailyLimit: 5, monthlyLimit: 50 });
+  });
+
+  afterEach(async () => {
+    delete process.env.AUTHORCLAW_VAULT_KEY;
+    await rm(vaultDir, { recursive: true, force: true });
+  });
+
+  function registerFakeClaudeCli(router: AIRouter) {
+    const providers = (router as any).providers as Map<string, any>;
+    providers.set('claude-cli', { ...FAKE_PROVIDER });
+    providers.set('claude-cli-opus', { ...FAKE_PROVIDER, id: 'claude-cli-opus', model: 'opus' });
+  }
+
+  it('never returns claude-cli-opus as the fallback for a failed claude-cli call', async () => {
+    const router = new AIRouter({ ollama: { enabled: false } }, vault, costs);
+    await router.initialize();
+    registerFakeClaudeCli(router);
+    expect(router.getFallbackProvider('claude-cli')).toBeNull();
+  });
+
+  it('never returns claude-cli as the fallback for a failed claude-cli-opus call', async () => {
+    const router = new AIRouter({ ollama: { enabled: false } }, vault, costs);
+    await router.initialize();
+    registerFakeClaudeCli(router);
+    expect(router.getFallbackProvider('claude-cli-opus')).toBeNull();
+  });
+
+  it('falls through to a genuinely different provider when one is available', async () => {
+    await vault.set('gemini_api_key', 'k1');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no network in tests')));
+    const router = new AIRouter({ ollama: { enabled: false } }, vault, costs);
+    await router.initialize();
+    registerFakeClaudeCli(router);
+    expect(router.getFallbackProvider('claude-cli')?.id).toBe('gemini');
+    vi.unstubAllGlobals();
+  });
+
+  it('an explicit preferredProviderFallback pointing at the same transport is ignored', async () => {
+    await vault.set('gemini_api_key', 'k1');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no network in tests')));
+    const router = new AIRouter({ ollama: { enabled: false } }, vault, costs);
+    await router.initialize();
+    registerFakeClaudeCli(router);
+    router.setGlobalPreferredProviderFallback('claude-cli-opus'); // same transport as claude-cli
+    // Falls through to the free/paid heuristic instead of the (same-transport) configured fallback.
+    expect(router.getFallbackProvider('claude-cli')?.id).toBe('gemini');
+    vi.unstubAllGlobals();
   });
 });
