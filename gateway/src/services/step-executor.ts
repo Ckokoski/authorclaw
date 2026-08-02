@@ -774,6 +774,12 @@ export class StepExecutor {
         }
       });
 
+      // SEAM (ALP-1595 follow-on): book-bible.md is currently compiled
+      // on-demand only (POST /api/projects/:id/book-bible). Auto-regenerate
+      // was left out of v1 scope — when it's built, the natural place to
+      // trigger it is right here, gated on `isBibleStep` above, since that's
+      // already the signal that this step's output feeds the bible.
+
       // ── Auto-narrate completed chapter (opt-in via project.context.autoNarrate) ──
       // Inspired by OpenClaw's chat-scoped /tts auto controls. Generates an audio
       // preview of the just-completed chapter so the author can listen back without

@@ -220,6 +220,15 @@ export class MemoryService {
     await writeFile(join(dir, safeFile), content);
   }
 
+  /** Read back an entry saved via saveBookBibleEntry. Returns null if it doesn't exist yet. */
+  async getBookBibleEntry(projectId: string, filename: string): Promise<string | null> {
+    const safeProject = sanitizeSegment(projectId, 'project');
+    const safeFile = sanitizeSegment(filename, 'entry.md');
+    const filePath = join(this.memoryDir, 'book-bible', safeProject, safeFile);
+    if (!existsSync(filePath)) return null;
+    return readFile(filePath, 'utf-8');
+  }
+
   /**
    * Reset all memory — conversations, summaries, active project.
    * Preserves book-bible entries (project data) unless fullReset is true.

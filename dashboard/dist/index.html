@@ -3280,6 +3280,13 @@ function openProjectDetail(id) {
         '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">Check this book\'s outline against a known dramatic structure.</div>' +
         '<button class="secondary" id="pdStructureRun" style="font-size:12px;padding:6px 14px;">Analyze Structure</button>' +
         '<div id="pdStructureResults" style="margin-top:12px;"></div>' +
+        '<div class="card-title" style="margin-top:20px;">Book Bible</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">One canonical, reviewable doc — characters, timeline, locations, world rules, and items — compiled from tracked story context.</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+          '<button class="secondary" id="pdBibleCompile" style="font-size:12px;padding:6px 14px;">Compile Book Bible</button>' +
+          '<button class="secondary" id="pdBibleDownload" style="font-size:12px;padding:6px 14px;display:none;">Download .md</button>' +
+        '</div>' +
+        '<div id="pdBibleContent" style="font-size:12px;color:var(--muted);"></div>' +
       '</div>' +
       // ── WRITE (default) ──
       '<div class="card pd-tab-content" id="pdTabWrite">' +
@@ -3448,6 +3455,12 @@ function openProjectDetail(id) {
   var pdCompile = detail.querySelector('#pdCompile');
   if (pdCompile) pdCompile.addEventListener('click', function() { compileProject(id); });
 
+  // Wire Book Bible compile/download (in Plan stage)
+  var pdBibleCompile = detail.querySelector('#pdBibleCompile');
+  if (pdBibleCompile) pdBibleCompile.addEventListener('click', function() { compileProjectBible(id); });
+  var pdBibleDownload = detail.querySelector('#pdBibleDownload');
+  if (pdBibleDownload) pdBibleDownload.addEventListener('click', function() { downloadProjectBible(id); });
+
   // ── Stage tabs ──
   var loaded = { plan: false, polish: false };
   function activateStage(tabName) {
@@ -3460,7 +3473,7 @@ function openProjectDetail(id) {
     detail.querySelectorAll('.pd-tab-content').forEach(function(c) { c.style.display = 'none'; });
     var target = detail.querySelector('#pdTab' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
     if (target) target.style.display = 'block';
-    if (tabName === 'plan' && !loaded.plan) { loaded.plan = true; loadProjectContext(id); }
+    if (tabName === 'plan' && !loaded.plan) { loaded.plan = true; loadProjectContext(id); loadProjectBible(id); }
     if (tabName === 'polish' && !loaded.polish) { loaded.polish = true; loadProjectFiles(id); }
   }
   detail.querySelectorAll('.pd-tab').forEach(function(tab) {
@@ -3703,6 +3716,62 @@ function compileProject(id) {
       showToast(data.error || 'Compile failed', 'error');
     }
   }).catch(function(e) { showToast('Compile failed: ' + e.message, 'error'); });
+}
+
+// ================================================================
+// BOOK BIBLE
+// ================================================================
+var bibleContentCache = {};
+
+function renderBibleContent(id, content) {
+  var el = document.getElementById('pdBibleContent');
+  var dl = document.getElementById('pdBibleDownload');
+  if (!el) return;
+  bibleContentCache[id] = content;
+  if (dl) dl.style.display = content ? 'inline-block' : 'none';
+  if (!content) {
+    el.innerHTML = '<span style="color:var(--muted);">Not compiled yet. Click "Compile Book Bible" to generate it from tracked story context.</span>';
+    return;
+  }
+  el.innerHTML = '<pre style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:12px;border-radius:6px;max-height:400px;overflow:auto;border:1px solid var(--border);">' + esc(content) + '</pre>';
+}
+
+function loadProjectBible(id) {
+  var el = document.getElementById('pdBibleContent');
+  if (el) el.innerHTML = '<span style="color:var(--muted);">Loading...</span>';
+  api('GET', '/api/projects/' + id + '/book-bible').then(function(data) {
+    renderBibleContent(id, data.content || '');
+  }).catch(function() {
+    // Not compiled yet (404) or a transient load failure — same empty state either way.
+    renderBibleContent(id, '');
+  });
+}
+
+function compileProjectBible(id) {
+  showToast('Compiling book bible...', 'info');
+  api('POST', '/api/projects/' + id + '/book-bible').then(function(data) {
+    if (data.success) {
+      var counts = data.counts || {};
+      showToast('Book bible compiled! ' + (counts.characters || 0) + ' characters, ' + (counts.locations || 0) + ' locations.', 'success');
+      renderBibleContent(id, data.content);
+    } else {
+      showToast(data.error || 'Book bible compile failed', 'error');
+    }
+  }).catch(function(e) { showToast('Book bible compile failed: ' + e.message, 'error'); });
+}
+
+function downloadProjectBible(id) {
+  var content = bibleContentCache[id];
+  if (!content) return;
+  var blob = new Blob([content], { type: 'text/markdown' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'book-bible.md';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ================================================================

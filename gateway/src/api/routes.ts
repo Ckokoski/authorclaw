@@ -24,6 +24,7 @@ import { registerSystemRoutes } from './routes/system.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerDocumentRoutes } from './routes/documents.js';
 import { registerContextHeartbeatRoutes } from './routes/context-heartbeat.js';
+import { registerBookBibleRoutes } from './routes/book-bible.js';
 import { registerAuthorOSToolsRoutes } from './routes/authoros-tools.js';
 import { registerPersonaRoutes } from './routes/personas.js';
 import { registerResearchWebRoutes } from './routes/research-web.js';
@@ -57,6 +58,7 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   registerProjectRoutes(ctx);
   registerDocumentRoutes(ctx);
   registerContextHeartbeatRoutes(ctx);
+  registerBookBibleRoutes(ctx);
   registerAuthorOSToolsRoutes(ctx);
   registerPersonaRoutes(ctx);
   registerResearchWebRoutes(ctx);
