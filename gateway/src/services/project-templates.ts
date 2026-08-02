@@ -79,6 +79,20 @@ export interface StepGate {
   decidedVersion?: number; // The doc-versions.ts version number the decision applies to
 }
 
+// Marks a completed step as stale because an upstream step it transitively
+// depends on (via dependsOn) gained a new version after having already been
+// approved. `dirty` is orthogonal to `status` — a dirty step is still
+// `completed`; this is NOT a new status-union member. Set by
+// dependency-graph.ts, consumed by the M4 severity classifier (dirty-step-
+// classifier.ts), which fills in `severity`.
+export interface DirtyMarker {
+  causeStepId: string;      // the upstream step whose new version triggered this
+  causeVersionFrom: number; // the doc-versions.ts version the cause step was on when approved
+  causeVersionTo: number;   // the new doc-versions.ts version the cause step just gained
+  severity?: 'high' | 'low' | 'none'; // left undefined until M4 classifies it
+  markedAt: string;         // ISO timestamp — when this dependent was marked dirty
+}
+
 export interface ProjectStep {
   id: string;
   label: string;
@@ -103,6 +117,11 @@ export interface ProjectStep {
   // ── Review gate (see resolveStepGate / applyStepCompletion below) ──
   gateEnabled?: boolean;  // Per-step override — beats context.reviewGates and the template default.
   gate?: StepGate;        // Present once this step's gate has been opened at least once.
+  // ── Dirty tracking (see dependency-graph.ts) ──
+  // Present when an already-approved step this one transitively depends on
+  // gained a new version. Orthogonal to `status` (see DirtyMarker). Cleared
+  // by whatever re-approves/re-reviews this step (outside this module's scope).
+  dirty?: DirtyMarker;
 }
 
 export interface NovelPipelineConfig {
