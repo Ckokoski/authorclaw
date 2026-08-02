@@ -31,6 +31,24 @@ export type ProjectType =
   | 'pipeline'
   | 'custom';
 
+// Phase markers used across novel-pipeline / book-production steps. Also the
+// keys reviewGates and the gate template defaults are indexed by.
+export type PhaseName =
+  | 'premise'
+  | 'bible'
+  | 'outline'
+  | 'writing'
+  | 'revision'
+  | 'revision_apply'
+  | 'polish'
+  | 'assembly';
+
+export interface ProjectContext extends Record<string, any> {
+  // Per-phase override of the locked gate defaults (see GATED_PHASES_DEFAULT).
+  // Missing phase ⇒ fall through to the template default.
+  reviewGates?: Partial<Record<PhaseName, boolean>>;
+}
+
 export interface Project {
   id: string;
   type: ProjectType;
@@ -42,11 +60,23 @@ export interface Project {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
-  context: Record<string, any>;
+  context: ProjectContext;
   personaId?: string;     // Author persona assigned to this project
   preferredProvider?: string; // Override AI provider: 'gemini' | 'claude' | 'openai' | 'deepseek' | 'ollama' | null (auto)
   pipelineId?: string;    // Parent pipeline ID (if part of a pipeline)
   pipelinePhase?: number; // Phase order within pipeline (1-6)
+}
+
+// State of a step's review gate. 'open' = awaiting a human decision, and
+// unlike ConfirmationGateService requests, an open gate never expires — the
+// pipeline simply waits. 'approved'/'rejected' are terminal.
+export type GateState = 'open' | 'approved' | 'rejected';
+
+export interface StepGate {
+  state: GateState;
+  openedAt: string;      // ISO timestamp — set when the step reaches completion gated
+  decidedAt?: string;    // ISO timestamp — set when a human approves/rejects
+  decidedVersion?: number; // The doc-versions.ts version number the decision applies to
 }
 
 export interface ProjectStep {
@@ -56,7 +86,7 @@ export interface ProjectStep {
   toolSuggestion?: string; // Author OS tool to use
   taskType: string;        // AI router task type (for tier routing)
   prompt: string;          // The prompt to send to AI
-  status: 'pending' | 'active' | 'completed' | 'skipped' | 'failed';
+  status: 'pending' | 'active' | 'completed' | 'awaiting_review' | 'skipped' | 'failed';
   result?: string;
   error?: string;
   // Novel pipeline fields:
@@ -70,6 +100,9 @@ export interface ProjectStep {
   // (identical to the pre-conductor behavior). Present ⇒ the supervisor loop
   // may dispatch independent steps concurrently.
   dependsOn?: string[];
+  // ── Review gate (see resolveStepGate / applyStepCompletion below) ──
+  gateEnabled?: boolean;  // Per-step override — beats context.reviewGates and the template default.
+  gate?: StepGate;        // Present once this step's gate has been opened at least once.
 }
 
 export interface NovelPipelineConfig {
@@ -84,6 +117,74 @@ export interface NovelPipelineConfig {
   targetWordsPerChapter?: number; // default 3000
   protagonistName?: string;
   antagonistName?: string;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Gate state machine
+//
+// Every step persists a .md result, so every step is gateable in principle —
+// there is no gateable/non-gateable split. What keeps this manageable is the
+// locked per-phase default below: steps in a "planning" phase (premise/bible/
+// outline) gate for human review by default; downstream production phases
+// (writing/revision/polish/assembly) complete automatically, as they do
+// today. Callers can override per-step (gateEnabled) or per-phase, per-project
+// (context.reviewGates) without touching the locked defaults.
+//
+// This module intentionally stays pure/data-only (no engine, no I/O, no
+// expiry) — it mirrors the status-enum/audit-trail discipline of
+// ConfirmationGateService (confirmation-gate.ts) WITHOUT reusing that class,
+// since a review gate must never expire the way a 24h confirmation request
+// does.
+// ═══════════════════════════════════════════════════════════
+
+/** Phases gated for human review unless a step/project override says otherwise. */
+export const GATED_PHASES_DEFAULT: ReadonlySet<PhaseName> = new Set<PhaseName>([
+  'premise', 'bible', 'outline',
+]);
+
+/**
+ * Resolve whether a step gates on completion (enters 'awaiting_review'
+ * instead of 'completed'). Resolution order:
+ *   1. step.gateEnabled       — explicit per-step override, wins outright.
+ *   2. context.reviewGates[phase] — per-project, per-phase override.
+ *   3. GATED_PHASES_DEFAULT   — locked template default.
+ * A step with no phase (e.g. custom single-step projects, or template steps
+ * that never set `phase`) only gates via an explicit override — the locked
+ * default never applies to a phase-less step.
+ */
+export function resolveStepGate(step: ProjectStep, project: Project): boolean {
+  if (typeof step.gateEnabled === 'boolean') return step.gateEnabled;
+
+  const phase = step.phase as PhaseName | undefined;
+  if (!phase) return false;
+
+  const reviewGates = project.context?.reviewGates;
+  const override = reviewGates?.[phase];
+  if (typeof override === 'boolean') return override;
+
+  return GATED_PHASES_DEFAULT.has(phase);
+}
+
+/**
+ * Apply step completion under the gate state machine. Mutates `step` in
+ * place. A gated step opens its review gate (status -> 'awaiting_review',
+ * gate.state -> 'open') instead of completing. An ungated step completes
+ * exactly as it always has — same two field writes, nothing added.
+ */
+export function applyStepCompletion(
+  step: ProjectStep,
+  project: Project,
+  result: string,
+  now: string = new Date().toISOString(),
+): void {
+  if (resolveStepGate(step, project)) {
+    step.status = 'awaiting_review';
+    step.result = result;
+    step.gate = { state: 'open', openedAt: now };
+  } else {
+    step.status = 'completed';
+    step.result = result;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
