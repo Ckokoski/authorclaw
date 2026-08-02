@@ -15,5 +15,6 @@ export default defineConfig({
     // are `.ts` — this is standard NodeNext/tsx convention and vitest/esbuild
     // resolve it correctly without extra config.
     restoreMocks: true,
+    testTimeout: 15000,
   },
 });

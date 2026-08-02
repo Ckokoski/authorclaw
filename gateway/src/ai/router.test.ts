@@ -851,36 +851,41 @@ describe('runClaudeCliOnce (streaming behavior, fake spawn)', () => {
   });
 
   it('two concurrent calls get distinct temp files, both cleaned up', async () => {
-    const child1 = makeFakeChild();
-    const child2 = makeFakeChild();
-    const children = [child1, child2];
-    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => children.shift());
-    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+    vi.useFakeTimers();
+    try {
+      const child1 = makeFakeChild();
+      const child2 = makeFakeChild();
+      const children = [child1, child2];
+      const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => children.shift());
+      const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
 
-    const p1 = (router as any).runClaudeCliOnce(
-      FAKE_PROVIDER, { provider: 'claude-cli', system: 'sys A', messages: [{ role: 'user', content: 'hi' }] }, Date.now()
-    );
-    const p2 = (router as any).runClaudeCliOnce(
-      FAKE_PROVIDER, { provider: 'claude-cli', system: 'sys B', messages: [{ role: 'user', content: 'hi' }] }, Date.now()
-    );
-    await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalledTimes(2));
+      const p1 = (router as any).runClaudeCliOnce(
+        FAKE_PROVIDER, { provider: 'claude-cli', system: 'sys A', messages: [{ role: 'user', content: 'hi' }] }, Date.now()
+      );
+      const p2 = (router as any).runClaudeCliOnce(
+        FAKE_PROVIDER, { provider: 'claude-cli', system: 'sys B', messages: [{ role: 'user', content: 'hi' }] }, Date.now()
+      );
+      await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalledTimes(2));
 
-    const args1: string[] = fakeSpawn.mock.calls[0][1];
-    const args2: string[] = fakeSpawn.mock.calls[1][1];
-    const file1 = args1[args1.indexOf('--system-prompt-file') + 1];
-    const file2 = args2[args2.indexOf('--system-prompt-file') + 1];
-    expect(file1).not.toBe(file2);
+      const args1: string[] = fakeSpawn.mock.calls[0][1];
+      const args2: string[] = fakeSpawn.mock.calls[1][1];
+      const file1 = args1[args1.indexOf('--system-prompt-file') + 1];
+      const file2 = args2[args2.indexOf('--system-prompt-file') + 1];
+      expect(file1).not.toBe(file2);
 
-    child1.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'A' }) + '\n'));
-    child2.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'B' }) + '\n'));
+      child1.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'A' }) + '\n'));
+      child2.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'B' }) + '\n'));
 
-    const [r1, r2] = await Promise.all([p1, p2]);
-    expect(r1.text).toBe('A');
-    expect(r2.text).toBe('B');
+      const [r1, r2] = await Promise.all([p1, p2]);
+      expect(r1.text).toBe('A');
+      expect(r2.text).toBe('B');
 
-    const { access } = await import('node:fs/promises');
-    await expect(access(file1)).rejects.toThrow();
-    await expect(access(file2)).rejects.toThrow();
+      const { access } = await import('node:fs/promises');
+      await expect(access(file1)).rejects.toThrow();
+      await expect(access(file2)).rejects.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

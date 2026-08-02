@@ -12,7 +12,7 @@
  * EnginePort double manages step status transitions.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -72,7 +72,7 @@ function makeHandler(
     if (liveCounter) { liveCounter.cur++; liveCounter.max = Math.max(liveCounter.max, liveCounter.cur); }
     timeline.push({ id, event: 'start', t: Date.now() });
     cfg.onStart?.();
-    await new Promise(r => setTimeout(r, cfg.delayMs ?? 15));
+    await vi.advanceTimersByTimeAsync(cfg.delayMs ?? 15);
     timeline.push({ id, event: 'end', t: Date.now() });
     if (liveCounter) liveCounter.cur--;
     if (cfg.fail) { respond('[AI provider failure] simulated failure'); return; }
@@ -241,184 +241,219 @@ describe('deriveDependencies', () => {
 
 describe('conductor loop', () => {
   it('runs independent steps concurrently while chapters stay sequential', async () => {
-    // write1 → write2 (chapter continuity); polish1 hangs off write1.
-    const project = makeProject('cc', [
-      { id: 'w1', skill: 'write', chapterNumber: 1, dependsOn: [] },
-      { id: 'w2', skill: 'write', chapterNumber: 2, dependsOn: ['w1'] },
-      { id: 'p1', phase: 'polish', skill: 'revise', chapterNumber: 1, dependsOn: ['w1'] },
-    ]);
-    const timeline: TimelineEvent[] = [];
-    const handler = makeHandler({
-      w1: { delayMs: 20 }, w2: { delayMs: 60 }, p1: { delayMs: 60 },
-    }, timeline);
+    vi.useFakeTimers();
+    try {
+      // write1 → write2 (chapter continuity); polish1 hangs off write1.
+      const project = makeProject('cc', [
+        { id: 'w1', skill: 'write', chapterNumber: 1, dependsOn: [] },
+        { id: 'w2', skill: 'write', chapterNumber: 2, dependsOn: ['w1'] },
+        { id: 'p1', phase: 'polish', skill: 'revise', chapterNumber: 1, dependsOn: ['w1'] },
+      ]);
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({
+        w1: { delayMs: 20 }, w2: { delayMs: 60 }, p1: { delayMs: 60 },
+      }, timeline);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
-    const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
+      const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    expect(results.every(r => r.success)).toBe(true);
-    expect(results.length).toBe(3);
+      expect(results.every(r => r.success)).toBe(true);
+      expect(results.length).toBe(3);
 
-    const w1i = interval(timeline, 'w1');
-    const w2i = interval(timeline, 'w2');
-    const p1i = interval(timeline, 'p1');
+      const w1i = interval(timeline, 'w1');
+      const w2i = interval(timeline, 'w2');
+      const p1i = interval(timeline, 'p1');
 
-    // Chapters sequential: write2 starts only after write1 ends.
-    expect(w2i.start).toBeGreaterThanOrEqual(w1i.end);
-    // Independent branch: polish1 overlaps write2 (they run concurrently).
-    expect(overlaps(p1i, w2i)).toBe(true);
-    expect(project.status).toBe('completed');
+      // Chapters sequential: write2 starts only after write1 ends.
+      expect(w2i.start).toBeGreaterThanOrEqual(w1i.end);
+      // Independent branch: polish1 overlaps write2 (they run concurrently).
+      expect(overlaps(p1i, w2i)).toBe(true);
+      expect(project.status).toBe('completed');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a failed step blocks only its dependents; independent branches continue', async () => {
-    // A → B → D  and  A → C. B fails, so only D is blocked.
-    const project = makeProject('fail', [
-      { id: 'A', dependsOn: [] },
-      { id: 'B', dependsOn: ['A'] },
-      { id: 'C', dependsOn: ['A'] },
-      { id: 'D', dependsOn: ['B'] },
-    ]);
-    const timeline: TimelineEvent[] = [];
-    const handler = makeHandler({
-      A: {}, B: { fail: true }, C: {}, D: {},
-    }, timeline);
+    vi.useFakeTimers();
+    try {
+      // A → B → D  and  A → C. B fails, so only D is blocked.
+      const project = makeProject('fail', [
+        { id: 'A', dependsOn: [] },
+        { id: 'B', dependsOn: ['A'] },
+        { id: 'C', dependsOn: ['A'] },
+        { id: 'D', dependsOn: ['B'] },
+      ]);
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({
+        A: {}, B: { fail: true }, C: {}, D: {},
+      }, timeline);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
-    const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
+      const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    const byId = Object.fromEntries(project.steps.map(s => [s.id, s.status]));
-    expect(byId.A).toBe('completed');
-    expect(byId.B).toBe('failed');
-    expect(byId.C).toBe('completed');   // independent branch ran despite B failing
-    expect(byId.D).toBe('pending');     // dependent of B never became ready
-    // D never executed.
-    expect(results.find(r => r.step === 'D')).toBeUndefined();
-    expect(project.status).not.toBe('completed'); // D still outstanding
+      const byId = Object.fromEntries(project.steps.map(s => [s.id, s.status]));
+      expect(byId.A).toBe('completed');
+      expect(byId.B).toBe('failed');
+      expect(byId.C).toBe('completed');   // independent branch ran despite B failing
+      expect(byId.D).toBe('pending');     // dependent of B never became ready
+      // D never executed.
+      expect(results.find(r => r.step === 'D')).toBeUndefined();
+      expect(project.status).not.toBe('completed'); // D still outstanding
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('pause stops NEW dispatches but lets in-flight steps finish', async () => {
-    // A, B independent (both dispatched at concurrency 2); C independent, would
-    // be dispatched next. A pauses the project mid-flight → C must NOT start.
-    const project = makeProject('pause', [
-      { id: 'A', dependsOn: [] },
-      { id: 'B', dependsOn: [] },
-      { id: 'C', dependsOn: [] },
-    ]);
-    project.context = { conductorConcurrency: 2 };
-    const timeline: TimelineEvent[] = [];
-    const handler = makeHandler({
-      A: { delayMs: 30, onStart: () => { project.status = 'paused'; } },
-      B: { delayMs: 30 },
-      C: { delayMs: 30 },
-    }, timeline);
+    vi.useFakeTimers();
+    try {
+      // A, B independent (both dispatched at concurrency 2); C independent, would
+      // be dispatched next. A pauses the project mid-flight → C must NOT start.
+      const project = makeProject('pause', [
+        { id: 'A', dependsOn: [] },
+        { id: 'B', dependsOn: [] },
+        { id: 'C', dependsOn: [] },
+      ]);
+      project.context = { conductorConcurrency: 2 };
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({
+        A: { delayMs: 30, onStart: () => { project.status = 'paused'; } },
+        B: { delayMs: 30 },
+        C: { delayMs: 30 },
+      }, timeline);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
-    const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
+      const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    const byId = Object.fromEntries(project.steps.map(s => [s.id, s.status]));
-    // In-flight A and B finished…
-    expect(byId.A).toBe('completed');
-    expect(byId.B).toBe('completed');
-    // …but the paused project stopped C from ever dispatching.
-    expect(byId.C).toBe('pending');
-    expect(results.find(r => r.step === 'C')).toBeUndefined();
-    expect(project.status).toBe('paused');
+      const byId = Object.fromEntries(project.steps.map(s => [s.id, s.status]));
+      // In-flight A and B finished…
+      expect(byId.A).toBe('completed');
+      expect(byId.B).toBe('completed');
+      // …but the paused project stopped C from ever dispatching.
+      expect(byId.C).toBe('pending');
+      expect(results.find(r => r.step === 'C')).toBeUndefined();
+      expect(project.status).toBe('paused');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('respects the concurrency cap (project override)', async () => {
-    const project = makeProject('cap', [
-      { id: 's1', dependsOn: [] }, { id: 's2', dependsOn: [] },
-      { id: 's3', dependsOn: [] }, { id: 's4', dependsOn: [] },
-      { id: 's5', dependsOn: [] },
-    ]);
-    project.context = { conductorConcurrency: 2 };
-    const timeline: TimelineEvent[] = [];
-    const live = { cur: 0, max: 0 };
-    const handler = makeHandler(
-      Object.fromEntries(project.steps.map(s => [s.id, { delayMs: 25 }])),
-      timeline, live,
-    );
+    vi.useFakeTimers();
+    try {
+      const project = makeProject('cap', [
+        { id: 's1', dependsOn: [] }, { id: 's2', dependsOn: [] },
+        { id: 's3', dependsOn: [] }, { id: 's4', dependsOn: [] },
+        { id: 's5', dependsOn: [] },
+      ]);
+      project.context = { conductorConcurrency: 2 };
+      const timeline: TimelineEvent[] = [];
+      const live = { cur: 0, max: 0 };
+      const handler = makeHandler(
+        Object.fromEntries(project.steps.map(s => [s.id, { delayMs: 25 }])),
+        timeline, live,
+      );
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
-    await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
+      await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    expect(live.max).toBe(2); // never more than 2 concurrent AI calls
+      expect(live.max).toBe(2); // never more than 2 concurrent AI calls
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('clamps an out-of-range concurrency to the max of 3', async () => {
-    const project = makeProject('clamp', [
-      { id: 's1', dependsOn: [] }, { id: 's2', dependsOn: [] },
-      { id: 's3', dependsOn: [] }, { id: 's4', dependsOn: [] },
-      { id: 's5', dependsOn: [] },
-    ]);
-    project.context = { conductorConcurrency: 99 };
-    const timeline: TimelineEvent[] = [];
-    const live = { cur: 0, max: 0 };
-    const handler = makeHandler(
-      Object.fromEntries(project.steps.map(s => [s.id, { delayMs: 25 }])),
-      timeline, live,
-    );
+    vi.useFakeTimers();
+    try {
+      const project = makeProject('clamp', [
+        { id: 's1', dependsOn: [] }, { id: 's2', dependsOn: [] },
+        { id: 's3', dependsOn: [] }, { id: 's4', dependsOn: [] },
+        { id: 's5', dependsOn: [] },
+      ]);
+      project.context = { conductorConcurrency: 99 };
+      const timeline: TimelineEvent[] = [];
+      const live = { cur: 0, max: 0 };
+      const handler = makeHandler(
+        Object.fromEntries(project.steps.map(s => [s.id, { delayMs: 25 }])),
+        timeline, live,
+      );
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
-    await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
+      await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    expect(live.max).toBe(3);
+      expect(live.max).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('processes context-engine hooks serially (never concurrently) even on simultaneous completions', async () => {
-    // Three canonical steps ready at once: one chapter write + two bible steps.
-    // Their AI calls run concurrently, but the context-engine hooks must NOT.
-    const project = makeProject('hooks', [
-      { id: 'w1', skill: 'write', chapterNumber: 1, dependsOn: [] },
-      { id: 'b1', label: 'World bible', dependsOn: [] },
-      { id: 'b2', label: 'Character bible', dependsOn: [] },
-    ]);
-    project.type = 'book-bible';
-    project.context = { conductorConcurrency: 3 };
+    vi.useFakeTimers();
+    try {
+      // Three canonical steps ready at once: one chapter write + two bible steps.
+      // Their AI calls run concurrently, but the context-engine hooks must NOT.
+      const project = makeProject('hooks', [
+        { id: 'w1', skill: 'write', chapterNumber: 1, dependsOn: [] },
+        { id: 'b1', label: 'World bible', dependsOn: [] },
+        { id: 'b2', label: 'Character bible', dependsOn: [] },
+      ]);
+      project.type = 'book-bible';
+      project.context = { conductorConcurrency: 3 };
 
-    const hookLive = { cur: 0, max: 0 };
-    const hookOrder: string[] = [];
-    const contextEngine = {
-      async generateSummary(_pid: string, stepId: string) {
-        hookLive.cur++; hookLive.max = Math.max(hookLive.max, hookLive.cur);
-        hookOrder.push(stepId);
-        await new Promise(r => setTimeout(r, 15));
-        hookLive.cur--;
-      },
-      async extractEntities() { /* no-op */ },
-    };
+      const hookLive = { cur: 0, max: 0 };
+      const hookOrder: string[] = [];
+      const contextEngine = {
+        async generateSummary(_pid: string, stepId: string) {
+          hookLive.cur++; hookLive.max = Math.max(hookLive.max, hookLive.cur);
+          hookOrder.push(stepId);
+          await vi.advanceTimersByTimeAsync(15);
+          hookLive.cur--;
+        },
+        async extractEntities() { /* no-op */ },
+      };
 
-    const timeline: TimelineEvent[] = [];
-    const handler = makeHandler({
-      w1: { delayMs: 10 }, b1: { delayMs: 10 }, b2: { delayMs: 10 },
-    }, timeline);
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({
+        w1: { delayMs: 10 }, b1: { delayMs: 10 }, b2: { delayMs: 10 },
+      }, timeline);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler, {}, contextEngine));
-    await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler, {}, contextEngine));
+      await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    // Hooks were serialized despite the three steps completing near-simultaneously.
-    expect(hookLive.max).toBe(1);
-    expect(hookOrder.length).toBe(3);
+      // Hooks were serialized despite the three steps completing near-simultaneously.
+      expect(hookLive.max).toBe(1);
+      expect(hookOrder.length).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('chapter WRITE hooks fire in ascending chapter order', async () => {
-    // Strictly-sequential chapter chain → summaries recorded in chapter order.
-    const project = makeProject('order', [
-      { id: 'w1', skill: 'write', chapterNumber: 1, dependsOn: [] },
-      { id: 'w2', skill: 'write', chapterNumber: 2, dependsOn: ['w1'] },
-      { id: 'w3', skill: 'write', chapterNumber: 3, dependsOn: ['w2'] },
-    ]);
-    const summaryOrder: string[] = [];
-    const contextEngine = {
-      async generateSummary(_pid: string, stepId: string) { summaryOrder.push(stepId); },
-      async extractEntities() { /* no-op */ },
-    };
-    const timeline: TimelineEvent[] = [];
-    const handler = makeHandler({ w1: {}, w2: {}, w3: {} }, timeline);
+    vi.useFakeTimers();
+    try {
+      // Strictly-sequential chapter chain → summaries recorded in chapter order.
+      const project = makeProject('order', [
+        { id: 'w1', skill: 'write', chapterNumber: 1, dependsOn: [] },
+        { id: 'w2', skill: 'write', chapterNumber: 2, dependsOn: ['w1'] },
+        { id: 'w3', skill: 'write', chapterNumber: 3, dependsOn: ['w2'] },
+      ]);
+      const summaryOrder: string[] = [];
+      const contextEngine = {
+        async generateSummary(_pid: string, stepId: string) { summaryOrder.push(stepId); },
+        async extractEntities() { /* no-op */ },
+      };
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({ w1: {}, w2: {}, w3: {} }, timeline);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler, {}, contextEngine));
-    await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler, {}, contextEngine));
+      await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    expect(summaryOrder).toEqual(['w1', 'w2', 'w3']);
+      expect(summaryOrder).toEqual(['w1', 'w2', 'w3']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── M1.3 — ALP-1557: gate-blocking ──
@@ -457,51 +492,61 @@ describe('conductor loop', () => {
 
 describe('legacy projects (no dependsOn) run strictly sequentially', () => {
   it('executes steps one at a time in declared order — no overlap', async () => {
-    // No dependsOn on any step → hasDeps=false → legacy loop.
-    const project = makeProject('legacy', [
-      { id: 'L1' }, { id: 'L2' }, { id: 'L3' },
-    ]);
-    // Strip dependsOn to simulate a pre-conductor persisted project.
-    project.steps.forEach(s => { delete (s as any).dependsOn; });
-    // Route pre-activates the first step in the sequential model.
-    project.steps[0].status = 'active';
+    vi.useFakeTimers();
+    try {
+      // No dependsOn on any step → hasDeps=false → legacy loop.
+      const project = makeProject('legacy', [
+        { id: 'L1' }, { id: 'L2' }, { id: 'L3' },
+      ]);
+      // Strip dependsOn to simulate a pre-conductor persisted project.
+      project.steps.forEach(s => { delete (s as any).dependsOn; });
+      // Route pre-activates the first step in the sequential model.
+      project.steps[0].status = 'active';
 
-    const timeline: TimelineEvent[] = [];
-    const live = { cur: 0, max: 0 };
-    const handler = makeHandler({
-      L1: { delayMs: 20 }, L2: { delayMs: 20 }, L3: { delayMs: 20 },
-    }, timeline, live);
+      const timeline: TimelineEvent[] = [];
+      const live = { cur: 0, max: 0 };
+      const handler = makeHandler({
+        L1: { delayMs: 20 }, L2: { delayMs: 20 }, L3: { delayMs: 20 },
+      }, timeline, live);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler, {}, undefined));
-    const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler, {}, undefined));
+      const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    // Order identical to declaration and strictly serial.
-    expect(results.map(r => r.step)).toEqual(['L1', 'L2', 'L3']);
-    expect(live.max).toBe(1); // never concurrent
-    // Intervals do not overlap.
-    const a = interval(timeline, 'L1');
-    const b = interval(timeline, 'L2');
-    const c = interval(timeline, 'L3');
-    expect(overlaps(a, b)).toBe(false);
-    expect(overlaps(b, c)).toBe(false);
-    expect(project.status).toBe('completed');
+      // Order identical to declaration and strictly serial.
+      expect(results.map(r => r.step)).toEqual(['L1', 'L2', 'L3']);
+      expect(live.max).toBe(1); // never concurrent
+      // Intervals do not overlap.
+      const a = interval(timeline, 'L1');
+      const b = interval(timeline, 'L2');
+      const c = interval(timeline, 'L3');
+      expect(overlaps(a, b)).toBe(false);
+      expect(overlaps(b, c)).toBe(false);
+      expect(project.status).toBe('completed');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a failure halts the whole legacy run (prior behavior preserved)', async () => {
-    const project = makeProject('legacy-fail', [
-      { id: 'F1' }, { id: 'F2' }, { id: 'F3' },
-    ]);
-    project.steps.forEach(s => { delete (s as any).dependsOn; });
-    project.steps[0].status = 'active';
+    vi.useFakeTimers();
+    try {
+      const project = makeProject('legacy-fail', [
+        { id: 'F1' }, { id: 'F2' }, { id: 'F3' },
+      ]);
+      project.steps.forEach(s => { delete (s as any).dependsOn; });
+      project.steps[0].status = 'active';
 
-    const timeline: TimelineEvent[] = [];
-    const handler = makeHandler({ F1: {}, F2: { fail: true }, F3: {} }, timeline);
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({ F1: {}, F2: { fail: true }, F3: {} }, timeline);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
-    const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
+      const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    expect(results.map(r => r.step)).toEqual(['F1', 'F2']); // stopped at the failure
-    expect(project.steps.find(s => s.id === 'F3')!.status).toBe('pending'); // never activated after the halt
+      expect(results.map(r => r.step)).toEqual(['F1', 'F2']); // stopped at the failure
+      expect(project.steps.find(s => s.id === 'F3')!.status).toBe('pending'); // never activated after the halt
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── M1.3 — ALP-1557: gate-blocking ──

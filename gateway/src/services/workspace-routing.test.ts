@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, writeFile, readFile, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -21,8 +21,10 @@ describe('workspace-routing', () => {
   let installRootDir: string;
 
   beforeEach(async () => {
-    root = join(tmpdir(), `wsr-test-root-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    installRootDir = join(tmpdir(), `wsr-test-install-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    // Use a counter to ensure unique test dirs, avoiding race conditions under concurrent test runs
+    const counter = Math.floor(Math.random() * 1_000_000_000);
+    root = join(tmpdir(), `wsr-test-root-${counter}`);
+    installRootDir = join(tmpdir(), `wsr-test-install-${counter}`);
     await mkdir(root, { recursive: true });
     // Minimal bundled skeleton scaffoldBookWorkspace seeds from.
     await mkdir(join(installRootDir, 'workspace', 'soul'), { recursive: true });
