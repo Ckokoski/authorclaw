@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node --import tsx gateway/src/index.ts",
     "dev": "node --watch --import tsx gateway/src/index.ts",
+    "book": "node --import tsx gateway/src/cli/book.ts",
     "build": "tsc",
     "setup": "bash scripts/setup-wizard.sh",
     "setup:legacy": "bash scripts/setup.sh",

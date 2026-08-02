@@ -6,16 +6,16 @@
  * Purpose: Fiction & nonfiction writing assistant
  */
 
-import { config as loadDotenv } from 'dotenv';
 import express from 'express';
 import { createServer } from 'http';
 import { Server as SocketIO } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
-import { fileURLToPath } from 'url';
-import { dirname, join, resolve } from 'path';
+import { join } from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
+import { resolveInstallRootDir, loadInstallDotenv } from './services/install-root.js';
+import { resolveWorkspaceRoot, resolveActiveWorkspace } from './services/workspace-routing.js';
 
 import { ConfigService } from './services/config.js';
 import { MemoryService } from './services/memory.js';
@@ -92,39 +92,30 @@ import { logger } from './services/logger.js';
 import { ServiceContainer } from './services/container.js';
 import { MessagePipeline } from './services/message-pipeline.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const ROOT_DIR = __dirname.includes('dist')
-  ? join(__dirname, '..', '..', '..')
-  : join(__dirname, '..', '..');
+const ROOT_DIR = resolveInstallRootDir(import.meta.url, 2);
 
-// Load .env FIRST — before anything else reads process.env. Resolved
-// relative to ROOT_DIR (this file's own location), NOT process.cwd(). The
-// previous bare `import 'dotenv/config'` resolves .env relative to
-// whatever directory the process happens to be started FROM — if that's
-// ever anything other than this install's root (a different terminal, a
-// launcher, a scheduled task), it silently finds nothing and every env
-// override quietly reverts to its default, with no error at all. This is
-// exactly what happened to AUTHORCLAW_WORKSPACE_DIR: real work landed in
-// the wrong workspace for hours, invisible to git, before anyone noticed.
-const dotenvResult = loadDotenv({ path: join(ROOT_DIR, '.env') });
-// A missing .env is a normal, silent no-op for installs that don't use
-// one — but if AUTHORCLAW_WORKSPACE_DIR is set in the *shell* environment
-// while .env failed to load, that's worth a visible warning rather than a
-// silent fallback to the default path (console.warn, not the logger
-// service — that isn't constructed yet this early).
-if (dotenvResult.error && (dotenvResult.error as NodeJS.ErrnoException).code !== 'ENOENT') {
-  console.warn(`[startup] .env failed to load from ${join(ROOT_DIR, '.env')}: ${dotenvResult.error.message}`);
-}
+// Load .env FIRST — before anything else reads process.env. See
+// install-root.ts for why this must be resolved relative to ROOT_DIR (this
+// file's own location) rather than process.cwd() — a real incident where
+// AUTHORCLAW_WORKSPACE_DIR silently reverted to its default for hours.
+loadInstallDotenv(ROOT_DIR);
 
 // Where all live project data (book bible, chapters, memory, audit logs,
-// etc.) is stored. Defaults to <ROOT_DIR>/workspace as before; overridable
-// via AUTHORCLAW_WORKSPACE_DIR so this data can live somewhere other than
-// inside the AuthorAgent install itself — e.g. a separate git-tracked repo,
-// so manuscript history is decoupled from the tool's own version history.
-const WORKSPACE_DIR = process.env.AUTHORCLAW_WORKSPACE_DIR
-  ? resolve(process.env.AUTHORCLAW_WORKSPACE_DIR)
-  : join(ROOT_DIR, 'workspace');
+// etc.) is stored. AUTHORCLAW_WORKSPACE_DIR (or the AUTHORCLAW_PROJECTS_ROOT
+// alias) is now a ROOT that can hold MANY per-book workspaces at
+// `<root>/<book-slug>/`, selected via AUTHORCLAW_ACTIVE_BOOK or a
+// `<root>/.active-book` pointer file — see workspace-routing.ts. An existing
+// flat single-book install (memory/, soul/, projects/ directly under the
+// root, no active book selected) is detected as legacy and the root itself
+// is used unchanged, so no migration is required to keep it running.
+const WORKSPACE_ROOT = resolveWorkspaceRoot(process.env, join(ROOT_DIR, 'workspace'));
+const resolvedWorkspace = resolveActiveWorkspace(WORKSPACE_ROOT, process.env);
+const WORKSPACE_DIR = resolvedWorkspace.workspaceDir;
+if (resolvedWorkspace.mode === 'active-book') {
+  console.log(`[startup] Active book: ${resolvedWorkspace.activeBook} (${WORKSPACE_DIR})`);
+} else if (resolvedWorkspace.mode === 'default-book') {
+  console.log(`[startup] No active book selected — defaulting to '${resolvedWorkspace.activeBook}' (${WORKSPACE_DIR}). Run \`npm run book -- create <slug>\` and \`npm run book -- use <slug>\` to add more books.`);
+}
 
 // ═══════════════════════════════════════════════════════════
 // AuthorAgent Gateway
