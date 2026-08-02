@@ -47,6 +47,7 @@ import { registerWave3GatedRoutes } from './routes/wave3-gated.js';
 import { registerWebsiteRoutes } from './routes/website.js';
 import { registerReaderPanelRoutes } from './routes/reader-panel.js';
 import { registerReaderFeedbackRoutes } from './routes/reader-feedback.js';
+import { registerReviewRoutes } from './routes/review.js';
 
 export function createAPIRoutes(app: Application, gateway: any, rootDir?: string): void {
   const ctx = createApiContext(app, gateway, rootDir);
@@ -81,4 +82,5 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   registerWebsiteRoutes(ctx);
   registerReaderPanelRoutes(ctx);
   registerReaderFeedbackRoutes(ctx);
+  registerReviewRoutes(ctx);
 }

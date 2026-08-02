@@ -324,6 +324,90 @@ export class StepExecutor {
   }
 
   /**
+   * Rerun an `awaiting_review` step with reviewer feedback folded into its
+   * prompt (M1.5 — ALP-1559, POST .../revise). Unlike executeStepWithRetry
+   * (the plain single-step path, which never touches versioning/gates), this
+   * appends the new response as an immutable version and reopens the gate via
+   * openStepGate/applyStepCompletion — mirroring the file-save + gate-check
+   * runStep already does for the autonomous loop, just for one on-demand step
+   * instead of the whole conductor sweep.
+   */
+  async reviseStep(
+    projectId: string,
+    stepId: string,
+    feedback: string,
+    workspaceDir: string,
+  ): Promise<
+    | { ok: true; response: string; version: number; project: Project }
+    | { ok: false; kind: 'no-project' }
+    | { ok: false; kind: 'no-step' }
+    | { ok: false; kind: 'not-awaiting-review' }
+    | { ok: false; kind: 'provider-failure'; detail: string; project: Project }
+    | { ok: false; kind: 'short-response'; reason: string; project: Project }
+    | { ok: false; kind: 'error'; error: string; project: Project }
+  > {
+    const messageHandler = this.deps.getMessageHandler();
+    if (!messageHandler) throw new Error('ProjectEngine: message handler not wired (call setMessageHandler)');
+    const project = this.engine.getProject(projectId);
+    if (!project) return { ok: false, kind: 'no-project' };
+
+    const step = project.steps.find((s: any) => s.id === stepId);
+    if (!step) return { ok: false, kind: 'no-step' };
+    if (step.status !== 'awaiting_review') return { ok: false, kind: 'not-awaiting-review' };
+
+    step.prompt = `${step.prompt}\n\n## Reviewer feedback (revision requested)\n\n${feedback}`;
+
+    try {
+      const projectContext = await this.engine.buildProjectContext(project, step);
+      const userMessage = await this.buildStepUserMessage(project, step);
+      let response = '';
+
+      await messageHandler(
+        userMessage,
+        'projects',
+        (text: string) => { response = text; },
+        projectContext,
+        step.taskType || undefined,
+      );
+
+      if (!response || response.length < 50) {
+        response = '';
+        await messageHandler(userMessage, 'projects', (text: string) => { response = text; }, projectContext, 'general');
+      }
+
+      if (response && response.startsWith('[AI provider failure]')) {
+        const detail = response.replace(/^\[AI provider failure\]\s*/, '').substring(0, 500);
+        this.engine.failStep(project.id, step.id, detail);
+        return { ok: false, kind: 'provider-failure', detail, project: this.engine.getProject(project.id)! };
+      }
+      if (!response || response.length < 50) {
+        const reason = `AI returned an unusably short response (${response?.length ?? 0} chars) while revising this step.`;
+        this.engine.failStep(project.id, step.id, reason);
+        return { ok: false, kind: 'short-response', reason, project: this.engine.getProject(project.id)! };
+      }
+
+      const { join } = await import('path');
+      const { mkdir, writeFile } = await import('fs/promises');
+      const projectDir = join(workspaceDir, 'projects', project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+      await mkdir(projectDir, { recursive: true });
+      const stepFileName = `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+      const stepContent = `# ${step.label}\n\n${response}`;
+      const version = await docVersionService.appendVersion(projectDir, step.id, stepContent, 'agent-patch', 'Revised from reviewer feedback');
+      await writeFile(join(projectDir, stepFileName), stepContent, 'utf-8');
+
+      // openStepGate re-runs applyStepCompletion — since the step's phase is
+      // still gated, this puts it right back into awaiting_review with a fresh
+      // StepGate, exactly like the first time this step completed.
+      this.engine.openStepGate(project.id, step.id, response);
+
+      return { ok: true, response, version, project: this.engine.getProject(project.id)! };
+    } catch (error) {
+      this.engine.failStep(project.id, step.id, String(error));
+      return { ok: false, kind: 'error', error: String(error), project: this.engine.getProject(project.id)! };
+    }
+  }
+
+  /**
    * Serializes context-engine summary/entity extraction so the chapter-continuity
    * memory hooks NEVER run concurrently — even when steps finish out of order.
    * Chapter WRITE steps complete in chapter order (they depend on the prior
