@@ -20,6 +20,7 @@
 import type { ContextEngine } from './context-engine.js';
 import { generateDocxBuffer } from './docx-export.js';
 import { logger } from './logger.js';
+import { docVersionService } from './doc-versions.js';
 import type {
   Project,
   ProjectStep,
@@ -699,14 +700,21 @@ export class StepExecutor {
 
       const wordCount = response.split(/\s+/).length;
 
-      // Save to file
+      // Save to file + append immutable version
       try {
         const projectDir = join(workspaceDir, 'projects', currentProject.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
         await mkdir(projectDir, { recursive: true });
         const stepFileName = `${activeStep.id}-${activeStep.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-        await writeFile(join(projectDir, stepFileName), `# ${activeStep.label}\n\n${response}`, 'utf-8');
+        const canonicalPath = join(projectDir, stepFileName);
+        const stepContent = `# ${activeStep.label}\n\n${response}`;
+
+        // Append to immutable version storage
+        await docVersionService.appendVersion(projectDir, activeStep.id, stepContent);
+
+        // Write canonical/current pointer
+        await writeFile(canonicalPath, stepContent, 'utf-8');
       } catch (err) {
-        logger.debug('step output file save failed', err);
+        logger.debug('step output file save / versioning failed', err);
       }
 
       complete(response);
