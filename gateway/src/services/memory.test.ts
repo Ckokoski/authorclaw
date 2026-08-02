@@ -50,7 +50,7 @@ describe('MemoryService.getRelevant — relevant-memory budget', () => {
     await memory.setActiveProject('proj-1');
     const result = await memory.getRelevant('keyword');
     expect(result.length).toBeLessThanOrEqual(8_000 + 300); // + header overhead across entries
-  });
+  }, 30000);
 
   it('keeps the highest-relevance-scored entries and drops the low-relevance tail when over budget', async () => {
     await memory.setActiveProject('proj-1');

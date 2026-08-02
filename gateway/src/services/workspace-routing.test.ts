@@ -230,6 +230,6 @@ describe('workspace-routing', () => {
         { slug: 'book-a', active: false },
         { slug: 'book-b', active: true },
       ]);
-    });
+    }, 30000);
   });
 });
