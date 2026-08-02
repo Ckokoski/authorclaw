@@ -231,6 +231,7 @@ describe('StepExecutor full-manuscript allowlist (Chunk B1)', () => {
     getProject: () => undefined,
     completeStep: () => null,
     completeStepBare: () => {},
+    openStepGate: () => {},
     activateStep: () => null,
     failStep: () => {},
     buildProjectContext: async () => '',

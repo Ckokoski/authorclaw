@@ -21,6 +21,7 @@ import type { ContextEngine } from './context-engine.js';
 import { generateDocxBuffer } from './docx-export.js';
 import { logger } from './logger.js';
 import { docVersionService } from './doc-versions.js';
+import { resolveStepGate } from './project-templates.js';
 import type {
   Project,
   ProjectStep,
@@ -83,6 +84,14 @@ export interface EnginePort {
    * 'completed' status when nothing remains, like completeStep for the last step.
    */
   completeStepBare(projectId: string, stepId: string, result: string): void;
+  /**
+   * Open a step's review gate (M1.3 — ALP-1557) instead of completing it.
+   * Called in place of completeStep/completeStepBare when resolveStepGate()
+   * (project-templates.ts) says the step gates on completion. Persists
+   * status -> 'awaiting_review' + an open StepGate; does NOT advance/activate
+   * a next step — the pipeline simply waits for a human decision.
+   */
+  openStepGate(projectId: string, stepId: string, result: string): void;
   /** Mark a specific pending step 'active' + enrich its prompt (conductor dispatch). */
   activateStep(projectId: string, stepId: string): ProjectStep | null;
   failStep(projectId: string, stepId: string, error: string): void;
@@ -361,14 +370,14 @@ export class StepExecutor {
    * quality loop, file save, context-engine/auto-narrate/assembly hooks.
    */
   async autoExecuteLoop(projectId: string, opts: ExecuteStepOptions): Promise<{
-    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }>;
+    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }>;
     project: Project | undefined;
   }> {
     const messageHandler = this.deps.getMessageHandler();
     if (!messageHandler) throw new Error('ProjectEngine: message handler not wired (call setMessageHandler)');
     const services = this.deps.getStepServices();
 
-    const results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }> = [];
+    const results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }> = [];
 
     const project0 = this.engine.getProject(projectId);
     const hasDeps = !!project0 && project0.steps.some((s: any) => Array.isArray(s.dependsOn));
@@ -389,7 +398,7 @@ export class StepExecutor {
   private async legacySequentialLoop(
     projectId: string,
     opts: ExecuteStepOptions,
-    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }>,
+    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }>,
     messageHandler: MessageHandler,
     services: StepServices,
   ): Promise<void> {
@@ -405,7 +414,10 @@ export class StepExecutor {
 
       const outcome = await this.runStep(projectId, activeStep.id, opts, results, messageHandler, services, true);
       // Legacy contract: ANY failure (provider failure, short response, or a
-      // thrown error) halts the entire run.
+      // thrown error) halts the entire run. A gate (M1.3 — ALP-1557) also
+      // halts the loop the same way — `halt` just means "stop looping" — but
+      // it is NOT a failure: runStep pushes a success:true/gated:true result
+      // and never calls failStep(), so this halt is silent, not an error.
       if (outcome.halt) break;
 
       // Re-check pause AFTER step completes (catches /stop sent during long AI call)
@@ -422,6 +434,12 @@ export class StepExecutor {
    *     completed; let in-flight steps finish, then halt.
    *   - Failure: a failed step is left failed → its dependents' deps never
    *     satisfy → only that branch stalls; independent branches keep running.
+   *   - Gate (M1.3 — ALP-1557): a gated step opens its review gate and lands
+   *     in 'awaiting_review' — NOT 'completed'/'skipped' — so depsSatisfied()
+   *     below blocks its dependents exactly like a failure would, with no new
+   *     scheduling logic: this falls straight out of the existing ready-set
+   *     computation. Independent branches (not downstream of the gate) keep
+   *     dispatching normally.
    *   - Termination: loop ends when nothing is ready AND nothing is in flight.
    * Total concurrent AI calls are bounded by CONCURRENCY (each runStep issues
    * its AI calls sequentially), so no retry storm.
@@ -429,7 +447,7 @@ export class StepExecutor {
   private async conductorLoop(
     projectId: string,
     opts: ExecuteStepOptions,
-    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }>,
+    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }>,
     messageHandler: MessageHandler,
     services: StepServices,
   ): Promise<void> {
@@ -503,20 +521,22 @@ export class StepExecutor {
    * next step) and the conductor (advance=false → completeStepBare; the
    * supervisor owns dispatch).
    *
-   * Returns `{ success, halt }`. `halt` marks a failure that the legacy loop
-   * treats as a hard stop (provider failure / short response / thrown error).
-   * The conductor ignores `halt` — a failed step simply blocks its dependents.
+   * Returns `{ success, halt, gated? }`. `halt` marks either a failure OR a
+   * gate — both stop the legacy loop from advancing — but only a failure
+   * calls failStep()/pushes an error result. The conductor ignores `halt`
+   * either way — a blocked step (failed or gated) simply blocks its
+   * dependents via depsSatisfied(), independent branches keep running.
    * Pushes exactly one entry onto `results`, matching the prior behavior.
    */
   private async runStep(
     projectId: string,
     stepId: string,
     opts: ExecuteStepOptions,
-    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }>,
+    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }>,
     messageHandler: MessageHandler,
     services: StepServices,
     advance: boolean,
-  ): Promise<{ success: boolean; halt: boolean }> {
+  ): Promise<{ success: boolean; halt: boolean; gated?: boolean }> {
     const { join } = await import('path');
     const { mkdir, writeFile } = await import('fs/promises');
     const workspaceDir = opts.workspaceDir;
@@ -715,6 +735,29 @@ export class StepExecutor {
         await writeFile(canonicalPath, stepContent, 'utf-8');
       } catch (err) {
         logger.debug('step output file save / versioning failed', err);
+      }
+
+      // ── Gate check (M1.3 — ALP-1557) ──────────────────────────────────
+      // A gated step (resolveStepGate() — project-templates.ts) opens its
+      // review gate instead of completing: the version is already written
+      // above, so this only flips status -> 'awaiting_review' and emits a
+      // gate-opened event. Deliberately does NOT call complete() (no
+      // completeStep/completeStepBare) and skips every downstream hook
+      // (context-engine memory, auto-narrate, manuscript assembly) below —
+      // none of that should treat unapproved content as canonical yet.
+      if (resolveStepGate(activeStep, currentProject)) {
+        this.engine.openStepGate(currentProject.id, activeStep.id, response);
+        services.heartbeat?.addWords(wordCount);
+        results.push({ step: activeStep.label, success: true, wordCount, gated: true });
+        services.activityLog?.log({
+          type: 'gate_opened',
+          source: 'internal',
+          goalId: currentProject.id,
+          stepLabel: activeStep.label,
+          message: `🔒 "${activeStep.label}" is ready for your review — awaiting approval before the pipeline continues.`,
+          metadata: { wordCount },
+        });
+        return { success: true, halt: true, gated: true };
       }
 
       complete(response);

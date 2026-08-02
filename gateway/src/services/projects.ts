@@ -37,6 +37,7 @@ import {
   buildNovelPipelineSteps,
   buildBookProductionSteps,
   deriveDependencies,
+  applyStepCompletion,
   type Project,
   type ProjectStep,
   type ProjectType,
@@ -138,6 +139,7 @@ export class ProjectEngine {
       getProject: (id) => this.getProject(id),
       completeStep: (projectId, stepId, result) => this.completeStep(projectId, stepId, result),
       completeStepBare: (projectId, stepId, result) => this.completeStepBare(projectId, stepId, result),
+      openStepGate: (projectId, stepId, result) => this.openStepGate(projectId, stepId, result),
       activateStep: (projectId, stepId) => this.activateStep(projectId, stepId),
       failStep: (projectId, stepId, error) => this.failStep(projectId, stepId, error),
       buildProjectContext: (project, step) => this.buildProjectContext(project, step),
@@ -680,6 +682,31 @@ Description: ${description}`;
         logger.debug('project-completion hook dispatch failed', err);
       }
     }
+    this.persistState();
+  }
+
+  /**
+   * Open a step's review gate instead of completing it (M1.3 — ALP-1557).
+   * Called by the executor in place of completeStep/completeStepBare when
+   * resolveStepGate() (project-templates.ts) says the step gates on
+   * completion. Delegates the state transition to applyStepCompletion — the
+   * same pure function the gate state machine's own tests cover — so this
+   * is just persistence + timestamp bookkeeping around it.
+   *
+   * Deliberately does NOT recompute "remaining steps" / project-completion —
+   * an awaiting_review step is neither pending/active nor completed/skipped,
+   * so it simply falls out of both checks: dependents stay blocked (conductor
+   * ready-set) and the project is never mis-marked complete around it.
+   */
+  openStepGate(projectId: string, stepId: string, result: string): void {
+    const project = this.projects.get(projectId);
+    if (!project) return;
+    const step = project.steps.find(s => s.id === stepId);
+    if (!step) return;
+
+    applyStepCompletion(step, project, result);
+
+    project.updatedAt = new Date().toISOString();
     this.persistState();
   }
 
