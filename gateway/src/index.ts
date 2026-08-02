@@ -16,6 +16,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolveInstallRootDir, loadInstallDotenv } from './services/install-root.js';
 import { resolveWorkspaceRoot, resolveActiveWorkspace } from './services/workspace-routing.js';
+import { projectOutputDir, stepOutputFileName, legacyProjectOutputDir } from './services/project-paths.js';
 
 import { ConfigService } from './services/config.js';
 import { MemoryService } from './services/memory.js';
@@ -1618,21 +1619,43 @@ class AuthorAgentGateway {
             // Show files in specific directory
             const targetDir = join(projectsDir, args);
             if (!existsSync(targetDir)) return `Folder "${args}" not found.`;
-            const files = readdirSync(targetDir).filter(f => !statSync(join(targetDir, f)).isDirectory());
+            const entries = readdirSync(targetDir, { withFileTypes: true });
+            const files = entries.filter(e => !e.isDirectory()).map(e => e.name);
             files.forEach(f => {
               this.dashboardLastFileList.push(join(args, f));
               lines.push(`${this.dashboardLastFileList.length}. ${f}`);
             });
-            return `**Files in ${args}/:** (${files.length})\n\n${lines.join('\n')}\n\nUse \`/read 1\` to preview or \`/export 1\` to export.`;
+            // Descend one level into per-phase subfolders (ALP-1548).
+            const phaseDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
+            phaseDirs.forEach(ph => {
+              const phaseFiles = readdirSync(join(targetDir, ph)).filter(f => !statSync(join(targetDir, ph, f)).isDirectory());
+              lines.push(`📁 **${ph}/** (${phaseFiles.length} files)`);
+              phaseFiles.forEach(f => {
+                this.dashboardLastFileList.push(join(args, ph, f));
+                lines.push(`  ${this.dashboardLastFileList.length}. ${f}`);
+              });
+            });
+            return `**Files in ${args}/:** (${files.length + phaseDirs.length})\n\n${lines.join('\n')}\n\nUse \`/read 1\` to preview or \`/export 1\` to export.`;
           }
 
           // Show all project directories with files
           dirs.forEach(d => {
-            const files = readdirSync(join(projectsDir, d)).filter(f => !statSync(join(projectsDir, d, f)).isDirectory());
+            const entries = readdirSync(join(projectsDir, d), { withFileTypes: true });
+            const files = entries.filter(e => !e.isDirectory()).map(e => e.name);
             lines.push(`📁 **${d}/** (${files.length} files)`);
             files.forEach(f => {
               this.dashboardLastFileList.push(join(d, f));
               lines.push(`  ${this.dashboardLastFileList.length}. ${f}`);
+            });
+            // Descend one level into per-phase subfolders (ALP-1548).
+            const phaseDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
+            phaseDirs.forEach(ph => {
+              const phaseFiles = readdirSync(join(projectsDir, d, ph)).filter(f => !statSync(join(projectsDir, d, ph, f)).isDirectory());
+              lines.push(`  📁 **${ph}/** (${phaseFiles.length} files)`);
+              phaseFiles.forEach(f => {
+                this.dashboardLastFileList.push(join(d, ph, f));
+                lines.push(`    ${this.dashboardLastFileList.length}. ${f}`);
+              });
             });
           });
           return `**Project Files:**\n\n${lines.join('\n')}\n\nUse \`/read 1\` to preview or \`/export 1 docx\` to export.`;
@@ -2186,11 +2209,11 @@ class AuthorAgentGateway {
         const wordCount = aiResponse.split(/\s+/).length;
 
         // Save full output to workspace file
-        const projectDir = join(workspaceDir, 'projects', project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+        const projectDir = projectOutputDir(workspaceDir, project);
         let savedFileName = '';
         try {
           await fs.mkdir(projectDir, { recursive: true });
-          savedFileName = `${activeStep.id}-${activeStep.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+          savedFileName = stepOutputFileName(activeStep);
           await fs.writeFile(
             join(projectDir, savedFileName),
             `# ${activeStep.label}\n\n${aiResponse}`,
@@ -2269,8 +2292,9 @@ class AuthorAgentGateway {
 
             const chapterContents: string[] = [];
             for (const ws of writingSteps) {
-              const expectedFile = `${ws.id}-${ws.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-              const fullPath = join(projectDir, expectedFile);
+              const fileName = stepOutputFileName(ws);
+              const newPath = join(projectDir, fileName);
+              const fullPath = existsSync(newPath) ? newPath : join(legacyProjectOutputDir(workspaceDir, project), fileName);
               try {
                 const raw = await fs.readFile(fullPath, 'utf-8');
                 // Strip the "# Step Label" header that was prepended during save
