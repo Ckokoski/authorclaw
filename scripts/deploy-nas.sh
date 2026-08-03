@@ -27,7 +27,17 @@
 #           from docker/Dockerfile, push all tags
 #   Step 2  provision $AUTHORAGENT_DIR (compose + nginx.conf + .env + htpasswd +
 #           data dirs), bump AUTHORAGENT_TAG, pull + up -d
+#   Step 2b publish the port on the tailnet with Tailscale Serve
 #   Step 3  verify /healthz through the proxy, and that / demands auth
+#   Step 3b verify the same over Tailscale, including a socket.io handshake from
+#           the tailnet origin (see below)
+#
+# Reachable from both the LAN and the tailnet (ALP-1725). The tailnet leg is not
+# just the Serve entry: the gateway rejects any origin outside
+# AUTHORCLAW_ALLOWED_ORIGINS at the socket.io handshake, and behind the proxy it
+# cannot infer its own external origin, so the deploy has to hand it both the LAN
+# and tailnet origins. Getting that wrong serves the page fine over Tailscale and
+# silently kills only the live UI — hence the Step 3b handshake assertion.
 #
 # AuthorAgent runs as its OWN compose project (`authoragent`), not inside the
 # render-stack mono — different product, no shared nginx/registry-tag/data-dir
@@ -173,11 +183,36 @@ SSH_TARGET="$NAS_ALIAS"
 # no-op, which then shows up as an unexplained permission denial.
 REMOTE_PATH='export PATH=/usr/local/bin:/usr/syno/bin:/usr/bin:/bin:$PATH'
 
+# ---- Tailnet identity ----
+# ALP-1725 follow-up: AuthorAgent has to be reachable over Tailscale, not just
+# from the LAN. Read the NAS's own MagicDNS name instead of hardcoding it, so a
+# tailnet or machine rename doesn't silently strand the tailnet leg.
+#
+# Non-fatal by design: a NAS without the Tailscale package still gets a working
+# LAN deploy, with the tailnet steps below skipped rather than failing it.
+TS_BIN="${TS_BIN:-/var/packages/Tailscale/target/bin/tailscale}"
+TAILNET_HOST="$(ssh $SSH_OPTS "$SSH_TARGET" \
+  "[ -x '$TS_BIN' ] && '$TS_BIN' status --json 2>/dev/null | sed -n 's/.*\"DNSName\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\.\".*/\1/p' | head -1" \
+  2>/dev/null || true)"
+
+# Every externally-visible origin the gateway must accept. This is NOT cosmetic:
+# getAllowedOrigins() derives its list from `server.host`, which behind the proxy
+# is the container bind address (0.0.0.0), so anything not listed here is
+# rejected at the socket.io handshake with a 400. The failure is deceptive — the
+# page loads fine over Tailscale and only the live UI (chat, orchestra, progress)
+# is dead — so the tailnet origin has to go in alongside the LAN one, and Step 3b
+# below regression-tests exactly that.
+ALLOWED_ORIGINS="http://${NAS_HOST}:${AUTHORAGENT_PORT}"
+if [ -n "$TAILNET_HOST" ]; then
+  ALLOWED_ORIGINS="${ALLOWED_ORIGINS},http://${TAILNET_HOST}:${AUTHORAGENT_PORT}"
+fi
+
 echo "=== AuthorAgent NAS deploy ==="
 echo "  version : $DEPLOY_VERSION"
 echo "  source  : HEAD ($COMMIT_SHA) via git archive — working tree excluded"
 echo "  build   : $SSH_TARGET:$NAS_APP_DIR"
 echo "  project : $SSH_TARGET:$AUTHORAGENT_DIR"
+echo "  tailnet : ${TAILNET_HOST:-(Tailscale not detected on the NAS — LAN-only)}"
 echo "  dry-run : $DRY_RUN"
 echo ""
 
@@ -270,7 +305,7 @@ ssh $SSH_OPTS "$SSH_TARGET" "$REMOTE_PATH; set -eu
   bump_env AUTHORAGENT_REGISTRY '${REGISTRY}'
   bump_env AUTHORAGENT_PORT '${AUTHORAGENT_PORT}'
   bump_env AUTHORAGENT_DATA_DIR '${AUTHORAGENT_DIR}'
-  bump_env AUTHORAGENT_ALLOWED_ORIGINS 'http://${NAS_HOST}:${AUTHORAGENT_PORT}'
+  bump_env AUTHORAGENT_ALLOWED_ORIGINS '${ALLOWED_ORIGINS}'
   echo '  .env updated (AUTHORAGENT_TAG=${DEPLOY_VERSION})'
 
   BASIC_USER=\$(grep '^AUTHORAGENT_BASIC_USER=' .env | cut -d= -f2-)
@@ -348,6 +383,36 @@ ssh $SSH_OPTS "$SSH_TARGET" "$REMOTE_PATH; set -eu
   \$COMPOSE pull
   \$COMPOSE up -d"
 
+# ---- Step 2b: publish the port on the tailnet via Tailscale Serve ----
+# The docker-published port is already reachable from the tailnet by IP, since
+# docker binds 0.0.0.0 and Tailscale rides the same box. Serve is still what we
+# want: it gives AuthorAgent a stable MagicDNS URL and lists it in `tailscale
+# serve status` next to the other tailnet-exposed NAS services (render-stack
+# :8082, render-node-manager :8789), so it can't be missed when the tailnet
+# surface is audited.
+#
+# Note the side effect, so a later probe isn't misread as a broken deploy: once
+# Serve owns the port, Serve routes by MagicDNS hostname, and a request to the
+# bare tailnet IP gets Serve's own generic 404 instead of the app. Probe the
+# hostname, never 100.x.y.z.
+#
+# `tailscale serve` is idempotent — re-running it re-asserts the same mapping.
+# It needs operator rights, which the sanctioned alpha-technology identity has
+# (ALP-590); if it's ever revoked this warns rather than failing the deploy,
+# because Step 3b still proves whether the tailnet leg actually works.
+if [ -n "$TAILNET_HOST" ]; then
+  echo ""
+  echo "== Step 2b: publishing port $AUTHORAGENT_PORT on the tailnet =="
+  # shellcheck disable=SC2029
+  ssh $SSH_OPTS "$SSH_TARGET" "
+    if '$TS_BIN' serve --bg --http=$AUTHORAGENT_PORT 'http://127.0.0.1:$AUTHORAGENT_PORT' >/dev/null; then
+      echo '  serving http://$TAILNET_HOST:$AUTHORAGENT_PORT/'
+    else
+      echo '  WARN: tailscale serve failed (operator rights revoked?).' >&2
+      echo '  Step 3b will show whether the tailnet leg still works without it.' >&2
+    fi" || true
+fi
+
 # ---- Step 3: verify ----
 echo ""
 echo "== Step 3: verifying AuthorAgent (up to ${HEALTH_TIMEOUT}s) =="
@@ -400,10 +465,60 @@ if [ "$BADAUTH_STATUS" != "401" ]; then
 fi
 echo "  [PASS] GET / with bad credentials -> 401"
 
+# ---- Step 3b: verify the tailnet leg ----
+# The LAN checks above pass even when Tailscale access is completely broken, so
+# this is a separate assertion, not a repeat. The socket.io case is the one that
+# matters: a missing tailnet origin in AUTHORCLAW_ALLOWED_ORIGINS still serves
+# the page over Tailscale and only kills the live UI, which is easy to ship
+# without noticing. This is the regression test for that.
+if [ -n "$TAILNET_HOST" ]; then
+  echo ""
+  echo "== Step 3b: verifying tailnet access via $TAILNET_HOST =="
+
+  TS_HEALTH=$(curl -o /dev/null -s -w '%{http_code}' --max-time 10 \
+    "http://${TAILNET_HOST}:${AUTHORAGENT_PORT}/healthz" 2>/dev/null || echo 000)
+  if [ "$TS_HEALTH" != "200" ]; then
+    echo "FAIL: tailnet /healthz returned $TS_HEALTH, expected 200." >&2
+    echo "  Is this machine on the tailnet? (tailscale status)" >&2
+    echo "  Probe the MagicDNS name, not the 100.x IP — Serve owns the port and" >&2
+    echo "  answers bare-IP requests with its own 404." >&2
+    exit 1
+  fi
+  echo "  [PASS] tailnet /healthz -> 200"
+
+  TS_AUTH=$(curl -o /dev/null -s -w '%{http_code}' --max-time 10 \
+    "http://${TAILNET_HOST}:${AUTHORAGENT_PORT}/" 2>/dev/null || echo 000)
+  if [ "$TS_AUTH" != "401" ]; then
+    echo "FAIL: unauthenticated tailnet GET / returned $TS_AUTH, expected 401." >&2
+    echo "  The tailnet must go through the same auth front door as the LAN." >&2
+    exit 1
+  fi
+  echo "  [PASS] unauthenticated tailnet GET / -> 401"
+
+  # Authenticated so the request reaches the gateway rather than stopping at
+  # nginx: a rejected origin is a 400 from socket.io itself, not a proxy error.
+  TS_CREDS=$(ssh $SSH_OPTS "$SSH_TARGET" \
+    "cd '$AUTHORAGENT_DIR' && printf '%s:%s' \"\$(sed -n 's/^AUTHORAGENT_BASIC_USER=//p' .env)\" \"\$(sed -n 's/^AUTHORAGENT_BASIC_PASSWORD=//p' .env)\"" 2>/dev/null || true)
+  TS_WS=$(curl -o /dev/null -s -w '%{http_code}' --max-time 10 -u "$TS_CREDS" \
+    -H "Origin: http://${TAILNET_HOST}:${AUTHORAGENT_PORT}" \
+    "http://${TAILNET_HOST}:${AUTHORAGENT_PORT}/socket.io/?EIO=4&transport=polling" 2>/dev/null || echo 000)
+  if [ "$TS_WS" != "200" ]; then
+    echo "FAIL: socket.io handshake from the tailnet origin returned $TS_WS, expected 200." >&2
+    echo "  400 means AUTHORCLAW_ALLOWED_ORIGINS is missing" >&2
+    echo "  http://${TAILNET_HOST}:${AUTHORAGENT_PORT} — the page would load over" >&2
+    echo "  Tailscale but chat, the orchestra view and progress would all be dead." >&2
+    exit 1
+  fi
+  echo "  [PASS] socket.io handshake from the tailnet origin -> 200"
+fi
+
 echo ""
 echo "== Live container status =="
 ssh $SSH_OPTS "$SSH_TARGET" "$REMOTE_PATH; docker ps --filter name=authoragent --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
 echo ""
 echo "SUCCESS"
-echo "  AuthorAgent : http://${NAS_HOST}:${AUTHORAGENT_PORT}/  (basic auth)"
+echo "  AuthorAgent : http://${NAS_HOST}:${AUTHORAGENT_PORT}/  (basic auth, LAN)"
+if [ -n "$TAILNET_HOST" ]; then
+  echo "  Tailscale   : http://${TAILNET_HOST}:${AUTHORAGENT_PORT}/  (basic auth, tailnet)"
+fi
 echo "  Credentials : ssh $SSH_TARGET \"grep AUTHORAGENT_BASIC $AUTHORAGENT_DIR/.env\""

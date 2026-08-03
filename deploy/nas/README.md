@@ -18,7 +18,8 @@ with `--allow-dirty`.
 
 | | |
 |---|---|
-| URL | `http://<nas>:8427/` (HTTP basic auth) |
+| URL (LAN) | `http://<nas>:8427/` (HTTP basic auth) |
+| URL (Tailscale) | `http://alpha-ds1525.tail72fae3.ts.net:8427/` (same basic auth) |
 | Compose project | `/volume1/docker/authoragent` |
 | Build context | `/volume1/docker/authoragent-app` |
 | Image | `localhost:5555/authoragent:<package.json version>` |
@@ -31,6 +32,31 @@ Read the generated login on the NAS — never copy it into a ticket or comment
 ```bash
 ssh alpha-nas-lan 'grep AUTHORAGENT_BASIC /volume1/docker/authoragent/.env'
 ```
+
+## Tailscale
+
+AuthorAgent is reachable from the tailnet as well as the LAN. `deploy-nas.sh`
+reads the NAS's own MagicDNS name (never hardcoded) and registers the port with
+Tailscale Serve, so it sits in `tailscale serve status` beside the other
+tailnet-exposed NAS services (render-stack `:8082`, render-node-manager `:8789`).
+
+Two things about this that are easy to get wrong:
+
+- **The gateway must be told the tailnet origin.** `getAllowedOrigins()` builds
+  its allowlist from `server.host`, which behind the proxy is the container bind
+  address (`0.0.0.0`), so it cannot infer its own external origin. The deploy
+  puts both the LAN and tailnet origins in `AUTHORCLAW_ALLOWED_ORIGINS`. Miss the
+  tailnet one and the page still loads over Tailscale while the socket.io
+  handshake 400s — chat, the orchestra view and progress all go dead, with
+  nothing in the HTTP path looking wrong. Step 3b asserts that handshake for
+  exactly this reason.
+- **Probe the MagicDNS hostname, not the `100.x` IP.** Once Serve owns the port
+  it routes by hostname, and a bare tailnet-IP request gets Serve's own 404. That
+  404 is Serve answering, not AuthorAgent being down.
+
+Serve needs Tailscale operator rights, which the sanctioned `alpha-technology`
+identity has (ALP-590). A NAS without Tailscale still gets a working LAN deploy —
+the tailnet steps skip rather than fail.
 
 ## Why there is a proxy in front
 
