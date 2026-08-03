@@ -6729,5 +6729,13 @@ startPolling();
 
 })();
 </script>
+
+<!-- ═══════════════════════════════════════════════
+     M2.1: Preact-mounted panels (dashboard/src, built via
+     `npm run build:ui` -> review.js). No shared state with
+     the legacy script above — see dashboard/src/bridge.ts.
+     ═══════════════════════════════════════════════ -->
+<div id="review-panel-root"></div>
+<script src="review.js"></script>
 </body>
 </html>
