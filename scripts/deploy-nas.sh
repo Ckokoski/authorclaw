@@ -167,9 +167,11 @@ fi
 
 SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
 SSH_TARGET="$NAS_ALIAS"
-# Synology's default PATH for non-interactive ssh omits /usr/local/bin, where
-# docker lives — every remote command has to re-export it.
-REMOTE_PATH='export PATH=/usr/local/bin:/usr/bin:/bin:$PATH'
+# Synology's default PATH for non-interactive ssh omits both /usr/local/bin
+# (docker) and /usr/syno/bin (synoacltool) — every remote command has to
+# re-export it. Leaving out /usr/syno/bin makes the ACL strip below a silent
+# no-op, which then shows up as an unexplained permission denial.
+REMOTE_PATH='export PATH=/usr/local/bin:/usr/syno/bin:/usr/bin:/bin:$PATH'
 
 echo "=== AuthorAgent NAS deploy ==="
 echo "  version : $DEPLOY_VERSION"
@@ -289,7 +291,15 @@ ssh $SSH_OPTS "$SSH_TARGET" "$REMOTE_PATH; set -eu
   # run as root, so that is the one lever available without sudo.
   IMAGE='${REGISTRY}/${IMAGE_NAME}:${DEPLOY_VERSION}'
   mkdir -p workspace vault
-  command -v synoacltool >/dev/null 2>&1 && { synoacltool -del workspace >/dev/null 2>&1 || true; synoacltool -del vault >/dev/null 2>&1 || true; }
+  # Strip the ACL BEFORE the chown, while this identity still owns the dir —
+  # synoacltool denies a non-root caller on a dir owned by someone else, so
+  # doing it after the chown locks us out of our own data dir. On a redeploy
+  # the dirs are already 999-owned and this fails harmlessly: the ACL was
+  # stripped on first provision, and the write probe below is what actually
+  # decides whether the state is good.
+  for d in workspace vault; do
+    if command -v synoacltool >/dev/null 2>&1; then synoacltool -del \"\$d\" >/dev/null 2>&1 || true; fi
+  done
   APP_UID=\$(docker run --rm --entrypoint id \"\$IMAGE\" -u)
   APP_GID=\$(docker run --rm --entrypoint id \"\$IMAGE\" -g)
   docker run --rm --user 0:0 --entrypoint sh \
@@ -312,6 +322,11 @@ ssh $SSH_OPTS "$SSH_TARGET" "$REMOTE_PATH; set -eu
       -c 'touch /w/.write-probe /v/.write-probe && rm -f /w/.write-probe /v/.write-probe'; then
     echo \"ERROR: uid \$APP_UID cannot write the bind-mounted data dirs — refusing to start\" >&2
     echo '  (AuthorAgent would come up and then fail every save.)' >&2
+    echo '  Usually a leftover Synology ACL on a dir this identity no longer owns,' >&2
+    echo '  which synoacltool cannot strip. Recover by deleting the dir through a' >&2
+    echo '  root container so the next deploy re-provisions it cleanly:' >&2
+    echo \"    docker run --rm --user 0:0 -v '$AUTHORAGENT_DIR:/p' alpine rm -rf /p/vault /p/workspace\" >&2
+    echo '  (workspace holds manuscripts — back it up before removing it.)' >&2
     exit 1
   fi
   echo '  data dirs verified writable by the app uid'
