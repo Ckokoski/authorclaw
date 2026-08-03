@@ -297,9 +297,18 @@ ssh $SSH_OPTS "$SSH_TARGET" "$REMOTE_PATH; set -eu
   # the dirs are already 999-owned and this fails harmlessly: the ACL was
   # stripped on first provision, and the write probe below is what actually
   # decides whether the state is good.
-  for d in workspace vault; do
-    if command -v synoacltool >/dev/null 2>&1; then synoacltool -del \"\$d\" >/dev/null 2>&1 || true; fi
-  done
+  # 0755 workspace / 0700 vault: the app uid ends up owning both, so owner-write
+  # is all that's needed, and the vault holds encrypted API keys. The chmod is
+  # not optional — synoacltool -del leaves the POSIX mode derived from the ACL,
+  # which here is 000, so stripping without chmod'ing produces a dir nobody can
+  # use. All of this must precede the chown; afterwards we no longer own it.
+  # Both steps fail harmlessly on redeploy (already provisioned, already 999).
+  provision_dir() {
+    if command -v synoacltool >/dev/null 2>&1; then synoacltool -del \"\$1\" >/dev/null 2>&1 || true; fi
+    chmod \"\$2\" \"\$1\" 2>/dev/null || true
+  }
+  provision_dir workspace 0755
+  provision_dir vault 0700
   APP_UID=\$(docker run --rm --entrypoint id \"\$IMAGE\" -u)
   APP_GID=\$(docker run --rm --entrypoint id \"\$IMAGE\" -g)
   docker run --rm --user 0:0 --entrypoint sh \
