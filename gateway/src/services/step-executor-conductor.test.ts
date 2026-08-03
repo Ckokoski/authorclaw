@@ -458,31 +458,36 @@ describe('conductor loop', () => {
 
   // ── M1.3 — ALP-1557: gate-blocking ──
   it('a gated step opens its review gate and blocks only its own dependent branch; parallel siblings keep completing', async () => {
-    // A gates on completion; B depends on A; C is fully independent.
-    const project = makeProject('gate', [
-      { id: 'A', dependsOn: [], gateEnabled: true },
-      { id: 'B', dependsOn: ['A'] },
-      { id: 'C', dependsOn: [] },
-    ]);
-    const timeline: TimelineEvent[] = [];
-    const handler = makeHandler({ A: {}, B: {}, C: {} }, timeline);
+    vi.useFakeTimers();
+    try {
+      // A gates on completion; B depends on A; C is fully independent.
+      const project = makeProject('gate', [
+        { id: 'A', dependsOn: [], gateEnabled: true },
+        { id: 'B', dependsOn: ['A'] },
+        { id: 'C', dependsOn: [] },
+      ]);
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({ A: {}, B: {}, C: {} }, timeline);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
-    const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
+      const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    const byId = Object.fromEntries(project.steps.map(s => [s.id, s]));
-    expect(byId.A.status).toBe('awaiting_review');
-    expect(byId.A.gate).toEqual({ state: 'open', openedAt: expect.any(String) });
-    // B never became ready — depsSatisfied() requires 'completed'/'skipped',
-    // and 'awaiting_review' is neither. No new scheduling logic needed for this.
-    expect(byId.B.status).toBe('pending');
-    // C is on an independent branch and completes normally.
-    expect(byId.C.status).toBe('completed');
+      const byId = Object.fromEntries(project.steps.map(s => [s.id, s]));
+      expect(byId.A.status).toBe('awaiting_review');
+      expect(byId.A.gate).toEqual({ state: 'open', openedAt: expect.any(String) });
+      // B never became ready — depsSatisfied() requires 'completed'/'skipped',
+      // and 'awaiting_review' is neither. No new scheduling logic needed for this.
+      expect(byId.B.status).toBe('pending');
+      // C is on an independent branch and completes normally.
+      expect(byId.C.status).toBe('completed');
 
-    expect(results.find(r => r.step === 'A')).toMatchObject({ success: true, gated: true });
-    expect(results.find(r => r.step === 'B')).toBeUndefined(); // never dispatched
-    // The project can't be "done" while B is still blocked behind the gate.
-    expect(project.status).not.toBe('completed');
+      expect(results.find(r => r.step === 'A')).toMatchObject({ success: true, gated: true });
+      expect(results.find(r => r.step === 'B')).toBeUndefined(); // never dispatched
+      // The project can't be "done" while B is still blocked behind the gate.
+      expect(project.status).not.toBe('completed');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -551,29 +556,34 @@ describe('legacy projects (no dependsOn) run strictly sequentially', () => {
 
   // ── M1.3 — ALP-1557: gate-blocking ──
   it('halts cleanly at a gate — NOT as a failure — and never activates the next step', async () => {
-    const project = makeProject('legacy-gate', [
-      { id: 'G1' }, { id: 'G2', gateEnabled: true }, { id: 'G3' },
-    ]);
-    project.steps.forEach(s => { delete (s as any).dependsOn; });
-    project.steps[0].status = 'active';
+    vi.useFakeTimers();
+    try {
+      const project = makeProject('legacy-gate', [
+        { id: 'G1' }, { id: 'G2', gateEnabled: true }, { id: 'G3' },
+      ]);
+      project.steps.forEach(s => { delete (s as any).dependsOn; });
+      project.steps[0].status = 'active';
 
-    const timeline: TimelineEvent[] = [];
-    const handler = makeHandler({ G1: {}, G2: {}, G3: {} }, timeline);
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({ G1: {}, G2: {}, G3: {} }, timeline);
 
-    const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
-    const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
+      const exec = new StepExecutor(makeEngine(project), makeDeps(handler));
+      const { results } = await exec.autoExecuteLoop(project.id, { workspaceDir });
 
-    // Halted right after the gate — G3 never ran.
-    expect(results.map(r => r.step)).toEqual(['G1', 'G2']);
-    // A gate is NOT an error: every pushed result is success:true, and G2 is
-    // flagged gated so callers can tell "halted" apart from "failed".
-    expect(results.every(r => r.success)).toBe(true);
-    expect(results.find(r => r.step === 'G2')).toMatchObject({ success: true, gated: true });
+      // Halted right after the gate — G3 never ran.
+      expect(results.map(r => r.step)).toEqual(['G1', 'G2']);
+      // A gate is NOT an error: every pushed result is success:true, and G2 is
+      // flagged gated so callers can tell "halted" apart from "failed".
+      expect(results.every(r => r.success)).toBe(true);
+      expect(results.find(r => r.step === 'G2')).toMatchObject({ success: true, gated: true });
 
-    const byId = Object.fromEntries(project.steps.map(s => [s.id, s]));
-    expect(byId.G1.status).toBe('completed');
-    expect(byId.G2.status).toBe('awaiting_review');
-    expect(byId.G3.status).toBe('pending'); // never activated after the halt
-    expect(project.status).not.toBe('completed');
+      const byId = Object.fromEntries(project.steps.map(s => [s.id, s]));
+      expect(byId.G1.status).toBe('completed');
+      expect(byId.G2.status).toBe('awaiting_review');
+      expect(byId.G3.status).toBe('pending'); // never activated after the halt
+      expect(project.status).not.toBe('completed');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
