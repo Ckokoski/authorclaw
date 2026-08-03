@@ -877,7 +877,7 @@ describe('runClaudeCliOnce (streaming behavior, fake spawn)', () => {
     );
     await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalledTimes(2));
 
-    const files = fakeSpawn.mock.calls.map(([, args]: [string, string[]]) => args[args.indexOf('--system-prompt-file') + 1]);
+    const files = fakeSpawn.mock.calls.map(([, args]) => args[args.indexOf('--system-prompt-file') + 1]);
     const [file1, file2] = files;
     expect(file1).not.toBe(file2);
 
