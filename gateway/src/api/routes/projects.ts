@@ -458,7 +458,10 @@ export function registerProjectRoutes(ctx: ApiContext): void {
     const project = engine.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const { provider } = req.body;
-    const valid = ['gemini', 'deepseek', 'claude', 'openai', 'ollama', '', null];
+    const knownProviders: string[] = typeof services.aiRouter?.getKnownProviders === 'function'
+      ? services.aiRouter.getKnownProviders()
+      : ['gemini', 'deepseek', 'claude', 'openai', 'ollama'];
+    const valid = [...knownProviders, '', null];
     if (!valid.includes(provider)) return res.status(400).json({ error: 'Invalid provider' });
     (project as any).preferredProvider = provider || undefined;
     project.updatedAt = new Date().toISOString();
