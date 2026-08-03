@@ -1,25 +1,46 @@
 import { useEffect, useState } from 'preact/hooks';
-import { on } from '../bridge';
+import { emit, on } from '../bridge';
+import { ReviewSurface } from './review/ReviewSurface';
+
+export interface ReviewOpenDetail {
+  projectId: string;
+  stepId: string;
+  stepLabel?: string;
+}
 
 /**
- * Placeholder root for the gated-review panel (ALP-1553). M2.1 only wires
- * up the build + mount plumbing; the actual review UI (version list, diff
- * view, approve/revise actions) lands in a later milestone.
+ * Root for the gated-review panel (ALP-1553/ALP-1564). Renders nothing by
+ * default, so dist/index.html stays pixel-for-pixel identical to the legacy
+ * dashboard until a review is actually opened.
  *
- * Renders nothing visible yet, so dist/index.html stays pixel-for-pixel
- * identical to the legacy dashboard. The hidden marker + bridge listener
- * below exist purely to prove the mount and event bridge work end to end.
+ * Entry points (Reviews queue panel, Book View step row — both M2.5, not yet
+ * wired) open a review by dispatching the bridge event below from legacy
+ * vanilla JS:
+ *
+ *   window.dispatchEvent(new CustomEvent('authoragent:review-open', {
+ *     detail: { projectId, stepId, stepLabel }
+ *   }));
  */
 export function ReviewPanel() {
   const [lastPanel, setLastPanel] = useState<string | null>(null);
+  const [openReview, setOpenReview] = useState<ReviewOpenDetail | null>(null);
 
   useEffect(() => on<string>('panel-change', setLastPanel), []);
+  useEffect(() => on<ReviewOpenDetail>('review-open', setOpenReview), []);
+
+  if (!openReview) {
+    return <div data-testid="review-panel-mounted" data-last-panel={lastPanel ?? ''} style={{ display: 'none' }} />;
+  }
 
   return (
-    <div
-      data-testid="review-panel-mounted"
-      data-last-panel={lastPanel ?? ''}
-      style={{ display: 'none' }}
+    <ReviewSurface
+      projectId={openReview.projectId}
+      stepId={openReview.stepId}
+      stepLabel={openReview.stepLabel}
+      onClose={() => {
+        setOpenReview(null);
+        emit('review-close');
+      }}
     />
   );
 }
