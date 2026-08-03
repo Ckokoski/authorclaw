@@ -47,14 +47,11 @@ services:
       # leave these unwritable by the image's non-root user).
       - ${AUTHORAGENT_DATA_DIR:-/volume1/docker/authoragent}/workspace:/app/workspace
       - ${AUTHORAGENT_DATA_DIR:-/volume1/docker/authoragent}/vault:/app/config/.vault
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 2G
-        reservations:
-          cpus: "0.5"
-          memory: 512M
+    # mem_limit/cpu_shares, not deploy.resources: the DSM kernel has no CPU CFS
+    # scheduler, so a `cpus:` limit is rejected outright at container create
+    # ("NanoCPUs can not be set"). Same convention as the render-stack mono.
+    mem_limit: ${AUTHORAGENT_MEM_LIMIT:-2048m}
+    cpu_shares: ${AUTHORAGENT_CPU_SHARES:-1024}
     security_opt:
       - no-new-privileges:true
     networks:
@@ -71,6 +68,8 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./htpasswd:/etc/nginx/htpasswd:ro
+    mem_limit: ${AUTHORAGENT_PROXY_MEM_LIMIT:-128m}
+    cpu_shares: ${AUTHORAGENT_PROXY_CPU_SHARES:-512}
     security_opt:
       - no-new-privileges:true
     healthcheck:
