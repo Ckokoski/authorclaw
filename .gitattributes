@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings. They are authored on Windows but executed
+# on Linux (the NAS deploy target and the container), where a CRLF shebang line
+# fails with a bare "not found" that names the interpreter, not the newline.
+*.sh text eol=lf

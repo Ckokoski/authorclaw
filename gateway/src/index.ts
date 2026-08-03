@@ -1293,6 +1293,11 @@ class AuthorAgentGateway {
    * configured `server.host`:port when it's been set to something other than
    * localhost (e.g. a Tailscale IP), so the dashboard still works when
    * accessed remotely from a non-localhost origin.
+   *
+   * Behind a reverse proxy the browser's origin is the *proxy's* host:port,
+   * which this can't infer — `server.host` there is just the container bind
+   * address (0.0.0.0). AUTHORCLAW_ALLOWED_ORIGINS (comma-separated) adds those
+   * externally-visible origins explicitly; see deploy/nas/docker-compose.yml.
    */
   private getAllowedOrigins(): string[] {
     const port = this.config?.get?.('server.port', 3847) ?? 3847;
@@ -1300,6 +1305,10 @@ class AuthorAgentGateway {
     const host = this.config?.get?.('server.host', '127.0.0.1');
     if (host && host !== '127.0.0.1' && host !== 'localhost') {
       allowed.push(`http://${host}:${port}`);
+    }
+    for (const extra of (process.env.AUTHORCLAW_ALLOWED_ORIGINS ?? '').split(',')) {
+      const origin = extra.trim();
+      if (origin && !allowed.includes(origin)) allowed.push(origin);
     }
     return allowed;
   }

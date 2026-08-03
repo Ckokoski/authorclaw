@@ -32,6 +32,11 @@ export class ConfigService {
 
     // Environment variable overrides
     if (process.env.AUTHORCLAW_PORT) this.set('server.port', parseInt(process.env.AUTHORCLAW_PORT));
+    // Bind address. Defaults to 127.0.0.1 (default.json) because the gateway has
+    // no auth of its own — never widen this without an authenticating front door
+    // in front of it. Containers must set 0.0.0.0 so the published port works at
+    // all; deploy/nas/ pairs that with a basic-auth nginx proxy.
+    if (process.env.AUTHORCLAW_HOST) this.set('server.host', process.env.AUTHORCLAW_HOST);
     if (process.env.AUTHORCLAW_PRESET) this.set('security.permissionPreset', process.env.AUTHORCLAW_PRESET);
   }
 
