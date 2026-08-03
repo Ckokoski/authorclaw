@@ -87,6 +87,7 @@ import { TranslationPipelineService } from './services/translation-pipeline.js';
 import { WebsiteBuilderService } from './services/website-builder.js';
 import { TelegramBridge } from './bridges/telegram.js';
 import { DiscordBridge } from './bridges/discord.js';
+import { NotifierRegistry, TelegramNotifier } from './services/notifier.js';
 import { createAPIRoutes } from './api/routes.js';
 import { logger } from './services/logger.js';
 import { ServiceContainer } from './services/container.js';
@@ -137,6 +138,11 @@ class AuthorAgentGateway {
   // of the service container / getServices() projection.
   private telegram?: TelegramBridge;
   private discord?: DiscordBridge;
+
+  // Channel-agnostic notification registry — sits on top of the bridges.
+  // Notifiers hold a live getter back to their bridge, so registration
+  // happens once here and survives telegram connect/disconnect cycles.
+  private notifiers = new NotifierRegistry();
 
   // ── Service accessors ──
   // These delegate to the ServiceContainer so the ~2,600 lines of gateway code
@@ -305,6 +311,11 @@ class AuthorAgentGateway {
         `origin=${err.req?.headers?.origin || 'none'} url=${err.req?.url || 'unknown'}`
       );
     });
+
+    // Register notification channels. The getter reads `this.telegram` live,
+    // so this registration is one-time even though the bridge itself gets
+    // created/torn down later (Phase 8) and can reconnect via the dashboard.
+    this.notifiers.register(new TelegramNotifier(() => this.telegram));
 
     // Security middleware
     this.app.use(helmet({
@@ -975,12 +986,14 @@ class AuthorAgentGateway {
         stepsRemaining: g.steps.filter(s => s.status === 'pending' || s.status === 'active').length,
         type: g.type,
       })),
-      // Broadcast status to dashboard (WebSocket) and Telegram
+      // Broadcast status to dashboard (WebSocket) and every connected
+      // notification channel (Telegram today; Discord/others register the
+      // same way once they exist — see services/notifier.ts).
       (message: string) => {
         this.io.emit('autonomous-status', { message, timestamp: new Date().toISOString() });
-        if (this.telegram) {
-          this.telegram.broadcastToAllowed?.(message);
-        }
+        this.notifiers.dispatch({ type: 'status', message }).catch(err =>
+          logger.warn('[notifiers] dispatch failed:', err)
+        );
       },
       // Self-improvement analysis callback
       async (projectId: string) => {
