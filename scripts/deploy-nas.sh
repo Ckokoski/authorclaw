@@ -282,22 +282,39 @@ ssh $SSH_OPTS "$SSH_TARGET" "$REMOTE_PATH; set -eu
   fi
 
   # Bind-mount dirs must exist AND be writable by the image's non-root user
-  # before compose starts: freshly created Synology dirs inherit a restrictive
-  # ACL that silently blocks the container regardless of mode bits.
+  # before compose starts: a freshly created Synology dir inherits a restrictive
+  # ACL from its parent that silently overrides POSIX mode bits (ALP-1329), and
+  # the ssh identity here is not root so it cannot chown. Strip the ACL as the
+  # dir's owner, then chown through a root container — the docker daemon does
+  # run as root, so that is the one lever available without sudo.
+  IMAGE='${REGISTRY}/${IMAGE_NAME}:${DEPLOY_VERSION}'
   mkdir -p workspace vault
-  APP_UID=\$(docker run --rm --entrypoint id '${REGISTRY}/${IMAGE_NAME}:${DEPLOY_VERSION}' -u)
-  APP_GID=\$(docker run --rm --entrypoint id '${REGISTRY}/${IMAGE_NAME}:${DEPLOY_VERSION}' -g)
-  chown -R \"\$APP_UID:\$APP_GID\" workspace vault
+  command -v synoacltool >/dev/null 2>&1 && { synoacltool -del workspace >/dev/null 2>&1 || true; synoacltool -del vault >/dev/null 2>&1 || true; }
+  APP_UID=\$(docker run --rm --entrypoint id \"\$IMAGE\" -u)
+  APP_GID=\$(docker run --rm --entrypoint id \"\$IMAGE\" -g)
+  docker run --rm --user 0:0 --entrypoint sh \
+    -v \"\$PWD/workspace:/mnt/workspace\" -v \"\$PWD/vault:/mnt/vault\" \"\$IMAGE\" \
+    -c \"chown -R \$APP_UID:\$APP_GID /mnt/workspace /mnt/vault\"
   echo \"  data dirs owned by \$APP_UID:\$APP_GID\"
 
   # Seed the empty bind mount from the image's baked workspace skeleton — the
   # mount would otherwise shadow it with an empty dir on first boot.
   if [ -z \"\$(ls -A workspace)\" ]; then
-    docker run --rm -v \"\$PWD/workspace:/seed\" --user 0:0 --entrypoint sh \
-      '${REGISTRY}/${IMAGE_NAME}:${DEPLOY_VERSION}' -c 'cp -a /app/workspace/. /seed/ 2>/dev/null || true'
-    chown -R \"\$APP_UID:\$APP_GID\" workspace
+    docker run --rm --user 0:0 --entrypoint sh -v \"\$PWD/workspace:/seed\" \"\$IMAGE\" \
+      -c \"cp -a /app/workspace/. /seed/ && chown -R \$APP_UID:\$APP_GID /seed\"
     echo '  workspace seeded from image'
   fi
+
+  # Prove it rather than assume it: write as the app uid the way the container
+  # will. The ACL failure mode is silent and only shows up as a crash-loop.
+  if ! docker run --rm --user \"\$APP_UID:\$APP_GID\" --entrypoint sh \
+      -v \"\$PWD/workspace:/w\" -v \"\$PWD/vault:/v\" \"\$IMAGE\" \
+      -c 'touch /w/.write-probe /v/.write-probe && rm -f /w/.write-probe /v/.write-probe'; then
+    echo \"ERROR: uid \$APP_UID cannot write the bind-mounted data dirs — refusing to start\" >&2
+    echo '  (AuthorAgent would come up and then fail every save.)' >&2
+    exit 1
+  fi
+  echo '  data dirs verified writable by the app uid'
 
   \$COMPOSE pull
   \$COMPOSE up -d"
