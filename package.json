@@ -9,6 +9,7 @@
     "dev": "node --watch --import tsx gateway/src/index.ts",
     "book": "node --import tsx gateway/src/cli/book.ts",
     "build": "tsc",
+    "build:ui": "vite build --config dashboard/vite.config.ts",
     "setup": "bash scripts/setup-wizard.sh",
     "setup:legacy": "bash scripts/setup.sh",
     "recover": "bash scripts/recover.sh",
@@ -46,12 +47,14 @@
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^11.3.0",
     "cors": "^2.8.5",
+    "diff": "^9.0.0",
     "docx": "^9.6.0",
     "dotenv": "^17.3.1",
     "express": "^4.21.0",
     "helmet": "^8.0.0",
     "multer": "^2.1.0",
     "node-edge-tts": "^1.2.10",
+    "preact": "^10.29.8",
     "socket.io": "^4.7.0",
     "tsx": "^4.7.0"
   },
@@ -61,6 +64,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.9.3",
+    "vite": "^8.2.0",
     "vitest": "^4.1.10"
   },
   "engines": {
