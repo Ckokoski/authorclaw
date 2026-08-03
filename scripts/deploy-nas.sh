@@ -279,9 +279,14 @@ ssh $SSH_OPTS "$SSH_TARGET" "$REMOTE_PATH; set -eu
     # No htpasswd/openssl binary on Synology DSM; the httpd image has one and is
     # already needed nowhere else, so run it throwaway.
     docker run --rm httpd:2.4-alpine htpasswd -nbB \"\$BASIC_USER\" \"\$BASIC_PASS\" > htpasswd
-    chmod 640 htpasswd
     echo '  htpasswd generated'
   fi
+  # 644, not 640: nginx's worker runs as its own unprivileged uid inside the
+  # container and must read this file. A group-only-readable htpasswd makes
+  # nginx answer 500 to every request that carries credentials, while requests
+  # with none still get a 401 — so the mount looks fine until someone logs in.
+  # The contents are bcrypt hashes; the plaintext lives in .env at 600.
+  chmod 644 htpasswd
 
   # Bind-mount dirs must exist AND be writable by the image's non-root user
   # before compose starts: a freshly created Synology dir inherits a restrictive
@@ -380,6 +385,20 @@ if [ "$AUTH_STATUS" != "401" ]; then
   exit 1
 fi
 echo "  [PASS] unauthenticated GET / -> 401"
+
+# A credentialled request is what actually forces nginx to open the htpasswd
+# file. Without this case an unreadable htpasswd looks healthy: no-credential
+# requests are still challenged with 401 and only real logins get a 500.
+BADAUTH_STATUS=$(curl -o /dev/null -s -w '%{http_code}' --max-time 5 \
+  -u "deploy-probe:$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
+  "http://${NAS_HOST}:${AUTHORAGENT_PORT}/" 2>/dev/null || echo 000)
+if [ "$BADAUTH_STATUS" != "401" ]; then
+  echo "FAIL: GET / with bad credentials returned $BADAUTH_STATUS, expected 401." >&2
+  echo "  500 here means nginx cannot read /etc/nginx/htpasswd (permissions or" >&2
+  echo "  a missing mount) — no login would work." >&2
+  exit 1
+fi
+echo "  [PASS] GET / with bad credentials -> 401"
 
 echo ""
 echo "== Live container status =="
