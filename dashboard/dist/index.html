@@ -135,7 +135,17 @@ body {
 .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.03); }
 .nav-item.active { color: var(--text); border-left-color: var(--accent); background: rgba(230,126,34,0.08); }
 .nav-item .nav-icon { font-size: 18px; flex-shrink: 0; width: 22px; text-align: center; }
-.nav-item .nav-label { overflow: hidden; }
+.nav-item .nav-label { overflow: hidden; flex: 1; }
+.nav-badge {
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 10px;
+  padding: 3px 7px;
+  flex-shrink: 0;
+}
 
 .sidebar-footer {
   padding: 12px 16px;
@@ -345,6 +355,7 @@ textarea { resize: vertical; min-height: 60px; }
 .badge-paused { background: var(--warn); }
 .badge-completed { background: var(--success); }
 .badge-failed { background: var(--danger); }
+.badge-awaiting_review { background: var(--accent); color: #000; }
 .badge-danger { background: rgba(239,68,68,0.18); color: var(--danger); border: 1px solid rgba(239,68,68,0.35); }
 .badge-warn { background: rgba(245,158,11,0.18); color: var(--warn); border: 1px solid rgba(245,158,11,0.35); }
 .badge-muted { background: rgba(148,163,184,0.18); color: var(--muted); border: 1px solid rgba(148,163,184,0.35); }
@@ -541,6 +552,9 @@ textarea { resize: vertical; min-height: 60px; }
 .step-dot.completed { background: var(--success); }
 .step-dot.skipped { background: var(--muted); }
 .step-dot.failed { background: var(--danger); }
+.step-dot.awaiting_review { background: var(--accent); animation: hb-pulse 1.5s infinite; }
+.step-item.needs-review { cursor: pointer; }
+.step-item.needs-review:hover { background: rgba(245,158,11,0.08); }
 .step-output { margin-top: 8px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: #bdc3c7; white-space: pre-wrap; max-height: 200px; overflow-y: auto; display: none; }
 .step-output.open { display: block; }
 
@@ -611,6 +625,12 @@ textarea { resize: vertical; min-height: 60px; }
 .doc-row:last-child { border: none; }
 .doc-row .doc-name { flex: 1; font-weight: 600; }
 .doc-row .doc-meta { color: var(--muted); font-size: 12px; }
+
+/* ── Reviews queue ── */
+.review-row { cursor: pointer; }
+.review-row:hover { background: rgba(245,158,11,0.08); }
+.review-row .doc-name { display: flex; align-items: center; gap: 8px; }
+.review-row .doc-name .dirty-flag { color: var(--danger); font-size: 11px; font-weight: 700; }
 
 /* ── Settings key tags ── */
 .key-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
@@ -723,6 +743,11 @@ textarea { resize: vertical; min-height: 60px; }
     <div class="nav-item" data-panel="projects">
       <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>
       <span class="nav-label">Projects</span>
+    </div>
+    <div class="nav-item" data-panel="reviews">
+      <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
+      <span class="nav-label">Reviews</span>
+      <span class="nav-badge" id="reviewsNavBadge" style="display:none;">0</span>
     </div>
     <div class="nav-item" data-panel="personas">
       <span class="nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
@@ -956,6 +981,23 @@ textarea { resize: vertical; min-height: 60px; }
 
       <!-- Project Detail View (hidden by default, replaces list when active) -->
       <div id="projectDetailView" style="display:none;"></div>
+    </div>
+
+    <!-- ═══════════════════════════════
+         PANEL: REVIEWS (M2.5 — ALP-1567)
+         Cross-book queue of everything awaiting a human decision or
+         marked dirty by an upstream change. Opens the same review
+         surface (dashboard/src/panels/review/ReviewSurface.tsx) that
+         the Book View step row opens — see reviews-open handler below.
+         ═══════════════════════════════ -->
+    <div class="panel" id="panel-reviews">
+      <div class="card">
+        <div class="card-title">Awaiting Review</div>
+        <p class="hint" style="margin-bottom:14px;">Every step across all books that's gated on your decision, plus anything marked dirty by an upstream change.</p>
+        <div class="doc-list" id="reviewsQueueList">
+          <div style="color:var(--muted);text-align:center;padding:20px;">Loading…</div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════════════════════════════
@@ -1826,7 +1868,7 @@ function initials(name) {
 // ================================================================
 // NAVIGATION
 // ================================================================
-var panelTitles = { home: 'Home', projects: 'Projects', personas: 'Personas', library: 'Library', tools: 'Tools', settings: 'Settings' };
+var panelTitles = { home: 'Home', projects: 'Projects', reviews: 'Reviews', personas: 'Personas', library: 'Library', tools: 'Tools', settings: 'Settings' };
 var navItems = document.querySelectorAll('.nav-item');
 
 function switchPanel(name) {
@@ -1845,6 +1887,8 @@ function switchPanel(name) {
   } else if (name === 'personas') {
     loadPersonas();
     loadPersonaBreakdown();
+  } else if (name === 'reviews') {
+    loadReviewsQueue();
   } else if (name === 'library') {
     loadDocuments();
   } else if (name === 'tools') {
@@ -2049,6 +2093,7 @@ function startPolling() {
   loadHomeStats();
   loadWritingMomentum();
   loadGettingStarted();
+  updateReviewsBadge();
   statusPollTimer = setInterval(loadStatus, 10000);
   projectPollTimer = setInterval(function() {
     if (currentPanel === 'home' || currentPanel === 'projects') {
@@ -2058,8 +2103,75 @@ function startPolling() {
       loadActivity();
       loadHomeStats();
     }
+    updateReviewsBadge();
   }, 15000);
 }
+
+// ================================================================
+// REVIEWS QUEUE (M2.5 — ALP-1567) — cross-book triage entry point.
+// Opens the same review surface (dashboard/src/panels/review/ReviewSurface.tsx,
+// M2.2/ALP-1564) as the Book View step row below — both dispatch the
+// identical authoragent:review-open bridge event, so the mounted component
+// and its session state are the same regardless of entry point.
+// ================================================================
+function openReviewSurface(projectId, stepId, stepLabel) {
+  window.dispatchEvent(new CustomEvent('authoragent:review-open', {
+    detail: { projectId: projectId, stepId: stepId, stepLabel: stepLabel }
+  }));
+}
+
+function updateReviewsBadge() {
+  api('GET', '/api/reviews').then(function(data) {
+    var count = data.count || 0;
+    var badge = document.getElementById('reviewsNavBadge');
+    if (!badge) return;
+    badge.textContent = count > 99 ? '99+' : String(count);
+    badge.style.display = count > 0 ? 'inline-block' : 'none';
+  }).catch(function() { /* leave last-known badge state */ });
+}
+
+function loadReviewsQueue() {
+  var el = document.getElementById('reviewsQueueList');
+  api('GET', '/api/reviews').then(function(data) {
+    renderReviewsQueue(data.queue || []);
+    updateReviewsBadge();
+  }).catch(function() {
+    if (el) el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;">Could not load the reviews queue.</div>';
+  });
+}
+
+function renderReviewsQueue(queue) {
+  var el = document.getElementById('reviewsQueueList');
+  if (!el) return;
+  if (!queue || queue.length === 0) {
+    el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;">Nothing awaiting review. You\'re all caught up.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  queue.forEach(function(item) {
+    var row = document.createElement('div');
+    row.className = 'doc-row review-row';
+    row.innerHTML =
+      '<span>&#128203;</span>' +
+      '<span class="doc-name">' + esc(item.stepLabel) + (item.dirty ? ' <span class="dirty-flag">DIRTY</span>' : '') + '</span>' +
+      '<span class="doc-meta">' + esc(item.projectTitle) + '</span>' +
+      '<span class="doc-meta">' + esc(item.phase || '') + '</span>' +
+      '<span class="badge badge-awaiting_review" style="font-size:10px;">NEEDS REVIEW</span>';
+    row.addEventListener('click', function() {
+      openReviewSurface(item.projectId, item.stepId, item.stepLabel);
+    });
+    el.appendChild(row);
+  });
+}
+
+// Refresh the badge (and, if visible, the queue/step list) whenever a
+// review session closes — an approve/revise decision can change or clear
+// what's awaiting review, from either entry point.
+window.addEventListener('authoragent:review-close', function() {
+  updateReviewsBadge();
+  if (currentPanel === 'reviews') loadReviewsQueue();
+  if (currentPanel === 'projects' && currentDetailProject) openProjectDetail(currentDetailProject);
+});
 
 // ================================================================
 // HOME PANEL — Active Project Cards
@@ -3183,14 +3295,16 @@ function openProjectDetail(id) {
           '</div>' +
         '</span>';
       }
+      var needsReview = s.status === 'awaiting_review';
+      var statusLabel = needsReview ? 'NEEDS REVIEW' : esc(s.status);
       stepsHtml +=
-        '<div class="step-item" data-step-idx="' + i + '">' +
+        '<div class="step-item' + (needsReview ? ' needs-review' : '') + '" data-step-idx="' + i + '" data-step-status="' + esc(s.status) + '">' +
           '<span class="step-dot ' + esc(s.status) + '"></span>' +
           '<div style="flex:1;">' +
             '<div>' + esc(s.label || s.name || 'Step ' + (i+1)) + '</div>' +
-            '<div style="font-size:11px;color:var(--muted);">' + esc(s.status) + (s.status === 'completed' && isWritingStep(s) ? ' · ' + stepWords(s).toLocaleString() + ' words' : '') + (s.error ? ' - ' + esc(s.error.slice(0, 120)) : '') + '</div>' +
+            '<div style="font-size:11px;color:var(--muted);">' + (needsReview ? statusLabel : esc(s.status)) + (s.status === 'completed' && isWritingStep(s) ? ' · ' + stepWords(s).toLocaleString() + ' words' : '') + (s.dirty ? ' · dirty' : '') + (s.error ? ' - ' + esc(s.error.slice(0, 120)) : '') + '</div>' +
           '</div>' +
-          '<span class="badge badge-' + esc(s.status) + '" style="font-size:10px;">' + esc(s.status) + '</span>' +
+          '<span class="badge badge-' + esc(s.status) + '" style="font-size:10px;">' + statusLabel + '</span>' +
           checkMenu +
           retryBtn +
         '</div>' +
@@ -3468,10 +3582,16 @@ function openProjectDetail(id) {
     });
   }
 
-  // Wire step output toggle
+  // Wire step rows: a gated step (NEEDS REVIEW) opens the review surface in
+  // context; every other step just toggles its output preview.
   detail.querySelectorAll('.step-item').forEach(function(item) {
     item.addEventListener('click', function() {
       var idx = item.getAttribute('data-step-idx');
+      if (item.getAttribute('data-step-status') === 'awaiting_review') {
+        var s = steps[Number(idx)];
+        if (s) openReviewSurface(id, s.id, s.label || s.name);
+        return;
+      }
       var out = document.getElementById('stepOutput' + idx);
       if (out) out.classList.toggle('open');
     });
