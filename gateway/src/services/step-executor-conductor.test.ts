@@ -587,3 +587,61 @@ describe('legacy projects (no dependsOn) run strictly sequentially', () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 3. executeStepWithRetry — single-step path (ALP-1610)
+//
+// POST /api/projects/:id/execute (dashboard's manual "run step" button) has
+// its own gate check, separate from autoExecuteLoop's runStep(). Verifies it
+// opens the gate instead of completing, and never touches completeStep.
+// ═══════════════════════════════════════════════════════════
+
+describe('executeStepWithRetry — gate check (ALP-1610)', () => {
+  it('a gated step returns {ok:true, gated:true} and opens the review gate instead of completing', async () => {
+    vi.useFakeTimers();
+    try {
+      const project = makeProject('single-gate', [
+        { id: 'S1', gateEnabled: true },
+      ]);
+      project.steps[0].status = 'active';
+
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({ S1: {} }, timeline);
+      const engine = makeEngine(project);
+      const completeStepSpy = vi.spyOn(engine, 'completeStep');
+      const openStepGateSpy = vi.spyOn(engine, 'openStepGate');
+
+      const exec = new StepExecutor(engine, makeDeps(handler));
+      const result = await exec.executeStepWithRetry(project.id);
+
+      expect(result).toMatchObject({ ok: true, gated: true, step: 'S1' });
+      expect(openStepGateSpy).toHaveBeenCalledWith(project.id, 'S1', LONG);
+      expect(completeStepSpy).not.toHaveBeenCalled();
+      expect(project.steps[0].status).toBe('awaiting_review');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an ungated step completes normally (unchanged behavior)', async () => {
+    vi.useFakeTimers();
+    try {
+      const project = makeProject('single-ungated', [{ id: 'U1' }]);
+      project.steps[0].status = 'active';
+
+      const timeline: TimelineEvent[] = [];
+      const handler = makeHandler({ U1: {} }, timeline);
+      const engine = makeEngine(project);
+      const openStepGateSpy = vi.spyOn(engine, 'openStepGate');
+
+      const exec = new StepExecutor(engine, makeDeps(handler));
+      const result = await exec.executeStepWithRetry(project.id);
+
+      expect(result).toMatchObject({ ok: true, completedStep: 'U1' });
+      expect(openStepGateSpy).not.toHaveBeenCalled();
+      expect(project.steps[0].status).toBe('completed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

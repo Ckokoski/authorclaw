@@ -12,7 +12,11 @@ interface TelegramConfig {
 /** Handler for direct commands that interact with gateway services */
 interface CommandHandlers {
   createProject: (title: string, description: string, config?: Record<string, any>) => Promise<{ id: string; steps: number }>;
-  startAndRunProject: (projectId: string) => Promise<{ completed: string; response: string; wordCount: number; nextStep?: string } | { error: string }>;
+  startAndRunProject: (projectId: string) => Promise<
+    | { completed: string; response: string; wordCount: number; nextStep?: string }
+    | { error: string }
+    | { gated: true; step: string }
+  >;
   autoRunProject: (projectId: string, statusCallback: (msg: string) => Promise<void>) => Promise<void>;
   listProjects: () => Array<{ id: string; title: string; status: string; progress: string }>;
   saveToFile: (filename: string, content: string) => Promise<void>;
