@@ -26,6 +26,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import { logger } from './logger.js';
+import { reanchorComments } from './comments.js';
 
 const log = logger.child('[doc-versions]');
 
@@ -58,6 +59,12 @@ export class DocVersionService {
     const parentV = entries.length ? entries[entries.length - 1].v : undefined;
     const v = (parentV ?? 0) + 1;
 
+    // Read the outgoing content BEFORE overwriting anything, so comments
+    // anchored to it can be re-anchored against what's about to replace it.
+    const previousContent = parentV
+      ? await readFile(join(versionDir, `v${parentV}.md`), 'utf-8').catch(() => null)
+      : null;
+
     await writeFile(join(versionDir, `v${v}.md`), content, 'utf-8');
 
     entries.push({
@@ -69,6 +76,16 @@ export class DocVersionService {
       sha256: this.hashContent(content),
     });
     await this.writeIndex(versionDir, entries);
+
+    // Re-anchor this step's comments (M2.3 — ALP-1565) against the new
+    // content. Skipped for a step's first version (no comments could exist
+    // yet) and when content is unchanged. Never allowed to block the write
+    // that already succeeded above.
+    if (previousContent !== null && previousContent !== content) {
+      await reanchorComments(projectDir, stepId, content).catch((err) => {
+        log.error(`Failed to re-anchor comments for step ${stepId}:`, err);
+      });
+    }
 
     log.debug(`Appended v${v} for step ${stepId} (author: ${author})`);
     return v;

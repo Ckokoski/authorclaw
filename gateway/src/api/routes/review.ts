@@ -11,9 +11,12 @@
  */
 import { Request, Response } from 'express';
 import { join } from 'path';
+import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
 import type { ApiContext } from '../context.js';
 import { docVersionService } from '../../services/doc-versions.js';
 import { computeTransitiveDependents } from '../../services/dependency-graph.js';
+import { addComment, listComments, setCommentStatus, CommentValidationError } from '../../services/comments.js';
 import type { Project, ProjectStep } from '../../services/project-templates.js';
 
 /** Same slugification `step-executor.ts` uses for the on-disk project directory. */
@@ -198,6 +201,92 @@ export function registerReviewRoutes(ctx: ApiContext): void {
 
     const updated = engine.saveStepResult(project.id, step.id, content);
     res.json({ stepId: step.id, version, step: updated });
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Comments (M2.3 — ALP-1565, section + span anchoring)
+  // ═══════════════════════════════════════════════════════════
+
+  app.get('/api/projects/:id/steps/:stepId/comments', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const projectDir = projectDirFor(baseDir, project);
+    const comments = await listComments(projectDir, step.id);
+    res.json({ stepId: step.id, comments });
+  });
+
+  app.post('/api/projects/:id/steps/:stepId/comments', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const { type, sectionId, quote, prefixContext, suffixContext, body, author } = req.body || {};
+    if (type !== 'section' && type !== 'span') {
+      return res.status(400).json({ error: 'type must be "section" or "span"' });
+    }
+    if (typeof sectionId !== 'string' || !sectionId) {
+      return res.status(400).json({ error: 'sectionId (string) required' });
+    }
+    if (typeof body !== 'string' || !body.trim()) {
+      return res.status(400).json({ error: 'body (non-empty string) required' });
+    }
+
+    const projectDir = projectDirFor(baseDir, project);
+    const canonicalPath = join(projectDir, stepFileNameFor(step));
+    if (!existsSync(canonicalPath)) {
+      return res.status(400).json({ error: 'Step has no content yet to anchor a comment to' });
+    }
+    const currentContent = await readFile(canonicalPath, 'utf-8');
+
+    try {
+      const comment = await addComment(
+        projectDir,
+        step.id,
+        currentContent,
+        type === 'section'
+          ? { type: 'section', sectionId, body, author }
+          : {
+              type: 'span',
+              sectionId,
+              quote: typeof quote === 'string' ? quote : '',
+              prefixContext: typeof prefixContext === 'string' ? prefixContext : '',
+              suffixContext: typeof suffixContext === 'string' ? suffixContext : '',
+              body,
+              author,
+            },
+      );
+      res.json({ comment });
+    } catch (err) {
+      if (err instanceof CommentValidationError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+  });
+
+  app.patch('/api/projects/:id/steps/:stepId/comments/:commentId', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const { status } = req.body || {};
+    if (status !== 'open' && status !== 'resolved') {
+      return res.status(400).json({ error: 'status must be "open" or "resolved"' });
+    }
+
+    const projectDir = projectDirFor(baseDir, project);
+    const comment = await setCommentStatus(projectDir, step.id, String(req.params.commentId), status);
+    if (!comment) return res.status(404).json({ error: 'Comment not found' });
+    res.json({ comment });
   });
 
   // ═══════════════════════════════════════════════════════════
