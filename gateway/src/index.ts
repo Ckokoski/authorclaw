@@ -519,7 +519,7 @@ class AuthorAgentGateway {
     logger.info(`  ✓ Personas: ${this.personas.getCount()} author persona(s) loaded`);
 
     // ── Phase 6e: Project Engine ──
-    this.projectEngine = new ProjectEngine(this.authorOS, ROOT_DIR);
+    this.projectEngine = new ProjectEngine(this.authorOS, WORKSPACE_DIR);
     // Wire AI capabilities for dynamic planning
     this.projectEngine.setAI(
       (request) => this.aiRouter.complete(request),
@@ -1242,7 +1242,7 @@ class AuthorAgentGateway {
     }
 
     // ── Phase 9: API Routes ──
-    createAPIRoutes(this.app, this, ROOT_DIR);
+    createAPIRoutes(this.app, this, ROOT_DIR, WORKSPACE_DIR);
     logger.info('  ✓ API routes registered');
 
     // ── Phase 10: WebSocket ──
