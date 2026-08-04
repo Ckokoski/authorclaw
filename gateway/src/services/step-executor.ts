@@ -252,6 +252,7 @@ export class StepExecutor {
   async executeStepWithRetry(projectId: string):
     Promise<
       | { ok: true; completedStep: string; response: string; nextStep: ProjectStep | null; project: Project }
+      | { ok: true; gated: true; step: string; project: Project }
       | { ok: false; kind: 'no-project' }
       | { ok: false; kind: 'no-active-step' }
       | { ok: false; kind: 'provider-failure'; detail: string; project: Project }
@@ -306,6 +307,16 @@ export class StepExecutor {
           `Try a different provider in Settings, shorten the project description, or split the task.`;
         this.engine.failStep(project.id, activeStep.id, reason);
         return { ok: false, kind: 'short-response', reason, project: this.engine.getProject(project.id)! };
+      }
+
+      // ── Gate check (M1.3 — ALP-1557, wired here per ALP-1610) ──────────
+      // Mirrors runStep()'s gate branch below: a gated step opens its review
+      // gate instead of completing, so the dashboard's manual "run step"
+      // button surfaces "awaiting review" instead of silently advancing past
+      // a step the user hasn't approved yet.
+      if (resolveStepGate(activeStep, project)) {
+        this.engine.openStepGate(project.id, activeStep.id, response);
+        return { ok: true, gated: true, step: activeStep.label, project: this.engine.getProject(project.id)! };
       }
 
       const nextStep = this.engine.completeStep(project.id, activeStep.id, response);

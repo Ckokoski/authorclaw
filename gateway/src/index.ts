@@ -36,6 +36,7 @@ import { AuthorOSService } from './services/author-os.js';
 import { TTSService } from './services/tts.js';
 import { ImageGenService } from './services/image-gen.js';
 import { ProjectEngine } from './services/projects.js';
+import { resolveStepGate } from './services/project-templates.js';
 import { PersonaService } from './services/personas.js';
 import { ContextEngine } from './services/context-engine.js';
 import { MemorySearchService } from './services/memory-search.js';
@@ -1474,6 +1475,7 @@ class AuthorAgentGateway {
       // Run one step and return the result
       try {
         const result = await handlers.startAndRunProject(resumable.id);
+        if ('gated' in result) return `🔒 **"${result.step}"** is ready for your review — pausing until you decide.`;
         if ('error' in result) return `Error: ${result.error}`;
         return `▶️ Resumed **"${resumable.title}"**\n\n**Completed:** ${result.completed}\n${result.response.substring(0, 500)}${result.response.length > 500 ? '...' : ''}\n\n${result.nextStep ? `**Next:** ${result.nextStep}` : '✅ Project complete!'}`;
       } catch (err) {
@@ -2060,7 +2062,9 @@ class AuthorAgentGateway {
        * Returns a short summary for Telegram + accurate word count.
        */
       async startAndRunProject(projectId: string): Promise<
-        { completed: string; response: string; wordCount: number; nextStep?: string } | { error: string }
+        | { completed: string; response: string; wordCount: number; nextStep?: string }
+        | { error: string }
+        | { gated: true; step: string }
       > {
         const project = gateway.projectEngine.getProject(projectId);
         if (!project) return { error: 'Project not found' };
@@ -2230,6 +2234,27 @@ class AuthorAgentGateway {
           logger.error('Failed to save project step output:', fileErr);
         }
 
+        // ── Gate check (M1.3 — ALP-1557, wired here per ALP-1610) ──────────
+        // A gated step (resolveStepGate() — project-templates.ts) opens its
+        // review gate instead of completing: the file is already saved above,
+        // so this only flips status -> 'awaiting_review' and skips every
+        // downstream hook (context-engine memory, manuscript assembly) below
+        // — none of that should treat unapproved content as canonical yet.
+        // Mirrors StepExecutor.runStep's gate branch (step-executor.ts).
+        if (resolveStepGate(activeStep, project)) {
+          gateway.projectEngine.openStepGate(projectId, activeStep.id, aiResponse);
+          gateway.heartbeat.addWords(wordCount);
+          gateway.activityLog.log({
+            type: 'gate_opened',
+            source: 'telegram',
+            goalId: projectId,
+            stepLabel: activeStep.label,
+            message: `🔒 "${activeStep.label}" is ready for your review — awaiting approval before the pipeline continues.`,
+            metadata: { wordCount },
+          });
+          return { gated: true, step: activeStep.label };
+        }
+
         // Complete the step and advance
         const nextStep = gateway.projectEngine.completeStep(projectId, activeStep.id, aiResponse);
 
@@ -2378,6 +2403,13 @@ class AuthorAgentGateway {
             gateway.telegram && (gateway.telegram.pauseRequested = false);
             if (afterStepProject?.status !== 'paused') gateway.projectEngine.pauseProject(projectId);
             await statusCallback(`⏸ Paused at step ${stepNumber}/${totalSteps}. Say "continue" to resume.`);
+            return;
+          }
+
+          if ('gated' in result) {
+            await statusCallback(
+              `🔒 ${stepNumber}/${totalSteps}: "${result.step}" is ready for your review — auto-run is pausing until you decide.`
+            );
             return;
           }
 

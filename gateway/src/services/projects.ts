@@ -920,6 +920,7 @@ Description: ${description}`;
   async executeStepWithRetry(projectId: string):
     Promise<
       | { ok: true; completedStep: string; response: string; nextStep: ProjectStep | null; project: Project }
+      | { ok: true; gated: true; step: string; project: Project }
       | { ok: false; kind: 'no-project' }
       | { ok: false; kind: 'no-active-step' }
       | { ok: false; kind: 'provider-failure'; detail: string; project: Project }

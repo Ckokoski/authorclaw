@@ -244,6 +244,15 @@ export function registerProjectRoutes(ctx: ApiContext): void {
 
     const result = await engine.executeStepWithRetry(req.params.id);
 
+    if ('gated' in result && result.gated) {
+      return res.json({
+        success: true,
+        gated: true,
+        step: result.step,
+        project: result.project,
+      });
+    }
+
     if (result.ok) {
       return res.json({
         success: true,
