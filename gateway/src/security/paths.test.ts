@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { join, resolve, sep } from 'path';
+import { basename, join, resolve, sep } from 'path';
 import { resolveWithin, safeResolveWithin, sanitizeSegment } from './paths.js';
 
 describe('resolveWithin', () => {
-  const base = resolve('C:\\workspace\\project');
+  const base = resolve('workspace', 'project');
 
   it('joins a normal single segment inside the base', () => {
     const result = resolveWithin(base, 'file.txt');
@@ -37,7 +37,7 @@ describe('resolveWithin', () => {
     expect(() => resolveWithin(base, '../secrets.txt')).toThrow('Path escapes base directory');
   });
 
-  it('blocks traversal using backslashes', () => {
+  it.runIf(process.platform === 'win32')('blocks traversal using backslashes', () => {
     expect(() => resolveWithin(base, '..\\secrets.txt')).toThrow('Path escapes base directory');
   });
 
@@ -46,9 +46,9 @@ describe('resolveWithin', () => {
   });
 
   it('blocks a sibling directory that shares a string prefix with base', () => {
-    // e.g. base = C:\workspace\project, sibling = C:\workspace\project-evil
+    // e.g. base = /workspace/project, sibling = /workspace/project-evil
     // A naive `startsWith(base)` check (without separator) would wrongly allow this.
-    const sibling = base + '-evil';
+    const sibling = resolve(base, '..', `${basename(base)}-evil`);
     expect(() => resolveWithin(base, '..', 'project-evil', 'file.txt')).toThrow();
     // Direct absolute-path segment sanity check via resolve() semantics:
     expect(resolve(base, '..', 'project-evil')).toBe(sibling);
@@ -86,7 +86,7 @@ describe('resolveWithin', () => {
 });
 
 describe('safeResolveWithin', () => {
-  const base = resolve('C:\\workspace\\project');
+  const base = resolve('workspace', 'project');
 
   it('returns the resolved path for a safe segment', () => {
     expect(safeResolveWithin(base, 'ok.txt')).toBe(join(base, 'ok.txt'));
