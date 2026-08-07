@@ -20,9 +20,9 @@ import { addComment, listComments, setCommentStatus, CommentValidationError } fr
 import type { Project, ProjectStep } from '../../services/project-templates.js';
 
 /** Same slugification `step-executor.ts` uses for the on-disk project directory. */
-function projectDirFor(baseDir: string, project: Project): string {
+function projectDirFor(workspaceDir: string, project: Project): string {
   const slug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  return join(baseDir, 'workspace', 'projects', slug);
+  return join(workspaceDir, 'projects', slug);
 }
 
 /** Same slugification `step-executor.ts` uses for a step's canonical pointer file. */
@@ -75,8 +75,7 @@ function diffLines(fromText: string, toText: string): DiffOp[] {
 }
 
 export function registerReviewRoutes(ctx: ApiContext): void {
-  const { app, gateway, baseDir } = ctx;
-  const workspaceDir = join(baseDir, 'workspace');
+  const { app, gateway, workspaceDir } = ctx;
 
   function getEngine(res: Response): any | null {
     const engine = gateway.getProjectEngine?.();
@@ -128,7 +127,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     const step = findStep(project, req.params.stepId);
     if (!step) return res.status(404).json({ error: 'Step not found' });
 
-    const projectDir = projectDirFor(baseDir, project);
+    const projectDir = projectDirFor(workspaceDir, project);
     const canonicalPath = join(projectDir, stepFileNameFor(step));
     const versions = await docVersionService.getVersions(projectDir, step.id, canonicalPath);
     res.json({ stepId: step.id, versions });
@@ -147,7 +146,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: 'Version must be a positive integer' });
     }
 
-    const projectDir = projectDirFor(baseDir, project);
+    const projectDir = projectDirFor(workspaceDir, project);
     const content = await docVersionService.getVersionContent(projectDir, step.id, versionNumber);
     if (content === null) return res.status(404).json({ error: `Version v${versionNumber} not found` });
     res.json({ stepId: step.id, v: versionNumber, content });
@@ -167,7 +166,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: 'from and to query params must be positive integers' });
     }
 
-    const projectDir = projectDirFor(baseDir, project);
+    const projectDir = projectDirFor(workspaceDir, project);
     const [fromContent, toContent] = await Promise.all([
       docVersionService.getVersionContent(projectDir, step.id, from),
       docVersionService.getVersionContent(projectDir, step.id, to),
@@ -194,7 +193,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     }
 
     const { writeFile, mkdir } = await import('fs/promises');
-    const projectDir = projectDirFor(baseDir, project);
+    const projectDir = projectDirFor(workspaceDir, project);
     await mkdir(projectDir, { recursive: true });
     const version = await docVersionService.appendVersion(projectDir, step.id, content, 'user', note);
     await writeFile(join(projectDir, stepFileNameFor(step)), content, 'utf-8');
@@ -304,7 +303,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: `Step is "${step.status}", not awaiting_review` });
     }
 
-    const projectDir = projectDirFor(baseDir, project);
+    const projectDir = projectDirFor(workspaceDir, project);
     const currentVersion = await docVersionService.getCurrentVersion(projectDir, step.id);
     const decided = engine.decideStepGate(project.id, step.id, 'approved', currentVersion);
     res.json({ step: decided, project: engine.getProject(project.id) });

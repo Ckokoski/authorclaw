@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 import { Vault } from '../security/vault.js';
 import { CostTracker } from '../services/costs.js';
 import { logger } from '../services/logger.js';
-import { getLLMPrice } from '../services/pricing.js';
+import { getLLMPrice, PRICING_LAST_VERIFIED } from '../services/pricing.js';
 import { ModelConfig } from './model-config.js';
 
 const execFileAsync = promisify(execFile);
@@ -799,9 +799,13 @@ export class AIRouter {
     }
 
     // ── OpenAI GPT (PAID, or 'local' when pointed at a custom endpoint) ──
+    // A custom endpoint is a self-hosted server (LM Studio, vLLM, llama.cpp)
+    // that needs no API key by design — gate registration on "has a key OR
+    // has a local endpoint", not on the key alone, or local-only users never
+    // get this provider registered at all (no $0 pricing, no routing candidate).
     const openaiKey = await this.vault.get('openai_api_key');
-    if (openaiKey) {
-      const isLocalEndpoint = Boolean(this.config.openai?.endpoint);
+    const isLocalEndpoint = Boolean(this.config.openai?.endpoint);
+    if (openaiKey || isLocalEndpoint) {
       const model = this.resolveModel('openai', PROVIDER_DEFAULTS.openai.defaultModel);
       // A custom endpoint (LM Studio, vLLM, llama.cpp server) is a
       // self-hosted, zero-cost server — bill it at $0 regardless of whether
@@ -1257,7 +1261,14 @@ export class AIRouter {
       const priceFallback = tier === 'local'
         ? { costPer1kInput: 0, costPer1kOutput: 0 }
         : { costPer1kInput: def.costPer1kInput, costPer1kOutput: def.costPer1kOutput };
-      const priceRow = getLLMPrice(currentModel, priceFallback);
+      // A 'local' provider is always $0, full stop — bypass getLLMPrice()
+      // entirely rather than relying on its fallback path, since a
+      // self-hosted model's slug can still collide with a known-priced
+      // model name in LLM_PRICING (e.g. the default "gpt-4o" resolved
+      // model before a user sets a custom local model override).
+      const priceRow = tier === 'local'
+        ? { costPer1kInput: 0, costPer1kOutput: 0, confidence: 'listed' as const, lastVerified: PRICING_LAST_VERIFIED, note: 'Self-hosted local endpoint — $0 by definition' }
+        : getLLMPrice(currentModel, priceFallback);
       return {
         id,
         available: !!active?.available,
@@ -2080,8 +2091,13 @@ export class AIRouter {
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
     };
+    // Local servers (LM Studio, vLLM, llama.cpp) are "FREE, NO KEY" by design
+    // — only send Authorization when a key actually exists, rather than
+    // sending a literal "Bearer undefined".
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
     // OpenRouter recommends (but doesn't require) HTTP-Referer + X-Title
     // headers for ranking on their leaderboard. Since AuthorAgent is local-only,
     // we send a stable referrer string. Harmless for other providers.

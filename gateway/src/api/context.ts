@@ -9,6 +9,7 @@
 
 import { Application, Request, Response } from 'express';
 import multer from 'multer';
+import { join } from 'path';
 import { safeResolveWithin } from '../security/paths.js';
 
 /**
@@ -206,16 +207,24 @@ export async function gatherChapters(baseDir: string, project: any): Promise<Arr
  * Bundle of everything the original createAPIRoutes() closed over, passed to
  * each registerXRoutes(ctx) function so per-domain modules don't need to
  * duplicate service resolution or helper definitions.
+ *
+ * `baseDir` is the install checkout root (ROOT_DIR) — use it for install-tree
+ * paths like `skills/`. `workspaceDir` is the resolved per-book workspace
+ * root (honors AUTHORCLAW_WORKSPACE_DIR / the active-book pointer, see
+ * workspace-routing.ts) — use it for project/step output, `.config/`, etc.
+ * ALP-1614: these used to collapse to the same value (`join(baseDir,
+ * 'workspace')`), which silently ignored per-book workspace routing.
  */
 export interface ApiContext {
   app: Application;
   gateway: any;
   services: any;
   baseDir: string;
+  workspaceDir: string;
 }
 
-export function createApiContext(app: Application, gateway: any, rootDir?: string): ApiContext {
+export function createApiContext(app: Application, gateway: any, rootDir?: string, workspaceDir?: string): ApiContext {
   const services = gateway.getServices();
   const baseDir = rootDir || process.cwd();
-  return { app, gateway, services, baseDir };
+  return { app, gateway, services, baseDir, workspaceDir: workspaceDir || join(baseDir, 'workspace') };
 }

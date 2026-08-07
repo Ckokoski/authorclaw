@@ -261,6 +261,59 @@ describe('AIRouter provider selection and tiering (mocked vault/network)', () =>
     });
   });
 
+  describe('OpenAI-compatible local endpoint (LM Studio / vLLM / llama.cpp) — FREE, NO KEY', () => {
+    it('registers the openai provider at $0 cost / tier "local" when a local endpoint is configured but no API key is saved', async () => {
+      (global.fetch as any).mockImplementation((url: string) =>
+        url.includes('/models')
+          ? Promise.resolve({ ok: true })
+          : Promise.reject(new Error('no network in tests'))
+      );
+      const router = new AIRouter(
+        { ollama: { enabled: false }, openai: { endpoint: 'http://100.122.206.123:1234/v1' } },
+        vault, costs,
+      );
+      await router.initialize();
+      const openai = router.getActiveProviders().find(p => p.id === 'openai');
+      expect(openai).toBeDefined();
+      expect(openai!.tier).toBe('local');
+      expect(openai!.costPer1kInput).toBe(0);
+      expect(openai!.costPer1kOutput).toBe(0);
+      expect(openai!.available).toBe(true);
+    });
+
+    it('getProviderModelInfo also reports $0/"local" for the openai slot with no key saved', async () => {
+      (global.fetch as any).mockImplementation((url: string) =>
+        url.includes('/models')
+          ? Promise.resolve({ ok: true })
+          : Promise.reject(new Error('no network in tests'))
+      );
+      const router = new AIRouter(
+        { ollama: { enabled: false }, openai: { endpoint: 'http://100.122.206.123:1234/v1' } },
+        vault, costs,
+      );
+      await router.initialize();
+      const info = router.getProviderModelInfo().find(p => p.id === 'openai')!;
+      expect(info.tier).toBe('local');
+      expect(info.price.costPer1kInput).toBe(0);
+      expect(info.price.costPer1kOutput).toBe(0);
+    });
+
+    it('is selectable as a routing candidate with no OpenAI key saved (free-tier routing)', async () => {
+      (global.fetch as any).mockImplementation((url: string) =>
+        url.includes('/models')
+          ? Promise.resolve({ ok: true })
+          : Promise.reject(new Error('no network in tests'))
+      );
+      const router = new AIRouter(
+        { ollama: { enabled: false }, openai: { endpoint: 'http://100.122.206.123:1234/v1' } },
+        vault, costs,
+      );
+      await router.initialize();
+      // 'general' tier = 'free'; local-tier openai is the only provider registered.
+      expect(router.selectProvider('general').id).toBe('openai');
+    });
+  });
+
   describe('model resolution precedence (override > config > default)', () => {
     let workspaceDir: string;
 
