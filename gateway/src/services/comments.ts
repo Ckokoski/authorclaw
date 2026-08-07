@@ -271,9 +271,19 @@ function reanchorOne(
 
   const section = newSectionById.get(anchor.sectionId);
   if (!section) {
-    // Section itself vanished — nothing to re-anchor within. Leave the
-    // stale span anchor as-is rather than guessing a new home for it.
-    return { anchor, changed: false };
+    // The heading was removed or renamed, so there is nowhere valid to run
+    // the exact/fuzzy search. Preserve the last known section id while
+    // degrading the span and retaining its original details.
+    return {
+      anchor: { type: 'section', sectionId: anchor.sectionId },
+      changed: true,
+      degradedFrom: {
+        quote: anchor.quote,
+        prefixContext: anchor.prefixContext,
+        suffixContext: anchor.suffixContext,
+        reanchoredAt: new Date().toISOString(),
+      },
+    };
   }
 
   const withContext = anchor.prefixContext + anchor.quote + anchor.suffixContext;

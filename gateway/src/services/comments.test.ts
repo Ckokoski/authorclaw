@@ -170,6 +170,25 @@ describe('CommentService', () => {
       expect(after.body).toBe('Too melodramatic — cut this line.');
     });
 
+    it('degrades a span comment when its section heading is removed', async () => {
+      await addComment(projectDir, STEP_ID, CONTENT_V1, {
+        type: 'span',
+        sectionId: 'chapter-1',
+        quote: 'The door slammed shut behind her',
+        prefixContext: '',
+        suffixContext: ', echoing',
+        body: 'Keep this feedback visible.',
+      });
+
+      const newContent = '# Chapter Draft\n\n## Replacement\n\nA completely new opening.\n\n## Chapter 2\n\nMorning came quietly.';
+      await reanchorComments(projectDir, STEP_ID, newContent);
+
+      const [after] = await listComments(projectDir, STEP_ID);
+      expect(after.anchor).toEqual({ type: 'section', sectionId: 'chapter-1' });
+      expect(after.degradedFrom?.quote).toBe('The door slammed shut behind her');
+      expect(after.body).toBe('Keep this feedback visible.');
+    });
+
     it('leaves a section comment unaffected by span-level edits elsewhere in the same section', async () => {
       const comment = await addComment(projectDir, STEP_ID, CONTENT_V1, {
         type: 'section',

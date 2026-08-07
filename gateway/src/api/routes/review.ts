@@ -214,7 +214,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     const step = findStep(project, req.params.stepId);
     if (!step) return res.status(404).json({ error: 'Step not found' });
 
-    const projectDir = projectDirFor(baseDir, project);
+    const projectDir = projectDirFor(workspaceDir, project);
     const comments = await listComments(projectDir, step.id);
     res.json({ stepId: step.id, comments });
   });
@@ -238,7 +238,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: 'body (non-empty string) required' });
     }
 
-    const projectDir = projectDirFor(baseDir, project);
+    const projectDir = projectDirFor(workspaceDir, project);
     const canonicalPath = join(projectDir, stepFileNameFor(step));
     if (!existsSync(canonicalPath)) {
       return res.status(400).json({ error: 'Step has no content yet to anchor a comment to' });
@@ -282,7 +282,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: 'status must be "open" or "resolved"' });
     }
 
-    const projectDir = projectDirFor(baseDir, project);
+    const projectDir = projectDirFor(workspaceDir, project);
     const comment = await setCommentStatus(projectDir, step.id, String(req.params.commentId), status);
     if (!comment) return res.status(404).json({ error: 'Comment not found' });
     res.json({ comment });
