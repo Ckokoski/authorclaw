@@ -1,6 +1,6 @@
 {
   "name": "authoragent",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "The Autonomous AI Writing Agent — 6 book production phases, author personas, pipeline mode, 21-step deep revision, KDP-ready export. Built for authors who scale.",
   "main": "gateway/src/index.ts",
   "type": "module",
