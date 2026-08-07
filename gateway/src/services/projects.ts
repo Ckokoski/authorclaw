@@ -104,7 +104,14 @@ export type AISelectProviderFunc = (taskType: string) => { id: string };
 export class ProjectEngine {
   private projects: Map<string, Project> = new Map();
   private authorOS: AuthorOSService | null;
-  private rootDir: string;
+  /**
+   * Resolved per-book workspace root (honors AUTHORCLAW_WORKSPACE_DIR / the
+   * active-book pointer — see workspace-routing.ts). NOT the install
+   * checkout root — callers used to pass ROOT_DIR here and this class
+   * appended 'workspace' itself, which meant project/step state always lived
+   * under the install dir regardless of which book was active (ALP-1614).
+   */
+  private workspaceDir: string;
   private nextId = 1;
   private aiComplete: AICompleteFunc | null = null;
   private aiSelectProvider: AISelectProviderFunc | null = null;
@@ -132,10 +139,10 @@ export class ProjectEngine {
    */
   private stepExecutor: StepExecutor;
 
-  constructor(authorOS?: AuthorOSService, rootDir?: string) {
+  constructor(authorOS?: AuthorOSService, workspaceDir?: string) {
     this.authorOS = authorOS || null;
-    this.rootDir = rootDir || process.cwd();
-    this.stateFilePath = join(this.rootDir, 'workspace', '.config', 'projects-state.json');
+    this.workspaceDir = workspaceDir || join(process.cwd(), 'workspace');
+    this.stateFilePath = join(this.workspaceDir, '.config', 'projects-state.json');
 
     const enginePort: EnginePort = {
       getProject: (id) => this.getProject(id),
@@ -913,6 +920,7 @@ Description: ${description}`;
   async executeStepWithRetry(projectId: string):
     Promise<
       | { ok: true; completedStep: string; response: string; nextStep: ProjectStep | null; project: Project }
+      | { ok: true; gated: true; step: string; project: Project }
       | { ok: false; kind: 'no-project' }
       | { ok: false; kind: 'no-active-step' }
       | { ok: false; kind: 'provider-failure'; detail: string; project: Project }
@@ -1723,7 +1731,7 @@ Description: ${description}`;
       return this.coreLessonsCache;
     }
 
-    const coreLessonsPath = join(this.rootDir, 'workspace', '.agent', 'core-lessons.md');
+    const coreLessonsPath = join(this.workspaceDir, '.agent', 'core-lessons.md');
     if (!existsSync(coreLessonsPath)) {
       this.coreLessonsCache = null;
       this.coreLessonsCacheTime = now;
