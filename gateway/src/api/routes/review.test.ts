@@ -41,7 +41,7 @@ describe('review queue route', () => {
       gateway: {
         getProjectEngine: () => ({ listProjects: () => projects }),
       },
-      baseDir: '/unused',
+      workspaceDir: '/unused',
     } as any);
 
     await new Promise<void>((resolve) => {
