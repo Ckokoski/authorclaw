@@ -21,6 +21,7 @@ import type { ContextEngine } from './context-engine.js';
 import { generateDocxBuffer } from './docx-export.js';
 import { logger } from './logger.js';
 import { docVersionService } from './doc-versions.js';
+import { listComments, formatOpenCommentsForAgent } from './comments.js';
 import { resolveStepGate } from './project-templates.js';
 import type {
   Project,
@@ -366,7 +367,17 @@ export class StepExecutor {
     if (!step) return { ok: false, kind: 'no-step' };
     if (step.status !== 'awaiting_review') return { ok: false, kind: 'not-awaiting-review' };
 
-    step.prompt = `${step.prompt}\n\n## Reviewer feedback (revision requested)\n\n${feedback}`;
+    const { join } = await import('path');
+    const projectDir = join(workspaceDir, 'projects', project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+
+    // Structured comments (M2.3 — ALP-1565) ride alongside the free-text
+    // feedback field — open ones only, so a resolved comment stops nagging
+    // the agent on the next revision.
+    const openComments = (await listComments(projectDir, step.id)).filter((c) => c.status === 'open');
+    const commentsBlock = formatOpenCommentsForAgent(openComments);
+
+    step.prompt = `${step.prompt}\n\n## Reviewer feedback (revision requested)\n\n${feedback}` +
+      (commentsBlock ? `\n\n${commentsBlock}` : '');
 
     try {
       const projectContext = await this.engine.buildProjectContext(project, step);
@@ -397,9 +408,7 @@ export class StepExecutor {
         return { ok: false, kind: 'short-response', reason, project: this.engine.getProject(project.id)! };
       }
 
-      const { join } = await import('path');
       const { mkdir, writeFile } = await import('fs/promises');
-      const projectDir = join(workspaceDir, 'projects', project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
       await mkdir(projectDir, { recursive: true });
       const stepFileName = `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
       const stepContent = `# ${step.label}\n\n${response}`;
