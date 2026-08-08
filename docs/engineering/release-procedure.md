@@ -16,8 +16,11 @@ The release pull request must contain all of the following:
 2. A dated Markdown release note at `docs/releases/YYYY-MM-DD-vX.Y.Z.md` that
    identifies the pull request and issue, describes user-visible behavior,
    calls out compatibility/data risks, and lists verification and rollback.
-3. A successful required GitHub Actions check named `check (tsc + vitest)` on
-   the final pull-request head. It runs `npm ci` and `npm run check` on Node 22.
+3. Inspectable clean-checkout evidence for `npm ci` and `npm run check` on
+   Node 22, captured against the final pull-request head SHA. GitHub Actions is
+   structurally unavailable for repositories under the `dabeezor` account and
+   is not a release gate; an Actions failure caused solely by the account lock
+   does not invalidate otherwise passing local evidence.
 4. QA approval of that exact head SHA. Any commit after approval invalidates
    the approval and requires the check and QA review again.
 
@@ -43,12 +46,13 @@ to another date, rename and update the release note before tagging.
 
 1. **Prepare.** Rebase or merge current `main`; choose the version; update both
    manifests and the dated release note. Record the candidate head SHA.
-2. **Validate.** Run `npm ci` and `npm run check` from a clean checkout. Push the
-   candidate and require the GitHub Actions check on the same SHA. QA reviews
-   the diff and test evidence.
-3. **Merge.** Merge only the approved, green candidate into `main`. Do not merge
-   while GitHub reports the required check as failed, skipped, queued, or absent
-   unless a valid CTO waiver is recorded for that specific gate.
+2. **Validate.** Run `npm ci` and `npm run check` from a clean checkout on Node
+   22. Capture the command output, tool versions, candidate SHA, UTC timestamp,
+   and exit status in an issue attachment or other board-inspectable artifact.
+   QA reviews the diff and that evidence for the same SHA.
+3. **Merge.** Merge only the QA-approved candidate with passing clean-checkout
+   evidence into `main`. Any commit after validation or approval invalidates
+   both and requires validation and QA review again.
 4. **Tag.** From the resulting `main` commit, create annotated tag `vX.Y.Z` and
    push it. Confirm `git rev-parse vX.Y.Z^{commit}` equals the intended `main`
    release commit.
@@ -57,7 +61,8 @@ to another date, rename and update the release note before tagging.
    builds and pushes the versioned NAS image, recreates the compose project,
    and verifies health, authentication, and the LAN/tailnet paths. Do not use
    `--allow-unpushed-head` for a release.
-6. **Record.** Add the merge commit, tag URL, Actions run URL, deploy timestamp,
+6. **Record.** Add the merge commit, tag URL, clean-checkout evidence link,
+   deploy timestamp,
    deployed image tag, and deploy verification result to the release note (or
    to a linked GitHub Release if the branch is already immutable). QA verifies
    those links before closing the release issue.
@@ -77,10 +82,10 @@ explicitly.
 
 - [ ] Version and UTC-dated release note committed on candidate SHA
 - [ ] Local clean-checkout `npm ci` and `npm run check` pass
-- [ ] Required GitHub Actions run passes on the same SHA
+- [ ] Board-inspectable clean-checkout evidence passes on the same SHA
 - [ ] QA approval references the same SHA
 - [ ] Merge commit is on `origin/main`
 - [ ] Annotated immutable tag resolves to the merge commit
 - [ ] NAS deploy command succeeds for the versioned image
 - [ ] Post-deploy health, authentication, LAN, and tailnet checks pass
-- [ ] Release record contains clickable source, CI, tag, and deployment evidence
+- [ ] Release record contains clickable source, validation, tag, and deployment evidence
