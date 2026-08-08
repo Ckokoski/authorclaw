@@ -20,6 +20,8 @@
 import type { ContextEngine } from './context-engine.js';
 import { generateDocxBuffer } from './docx-export.js';
 import { logger } from './logger.js';
+import { docVersionService } from './doc-versions.js';
+import { resolveStepGate } from './project-templates.js';
 import type {
   Project,
   ProjectStep,
@@ -82,6 +84,14 @@ export interface EnginePort {
    * 'completed' status when nothing remains, like completeStep for the last step.
    */
   completeStepBare(projectId: string, stepId: string, result: string): void;
+  /**
+   * Open a step's review gate (M1.3 — ALP-1557) instead of completing it.
+   * Called in place of completeStep/completeStepBare when resolveStepGate()
+   * (project-templates.ts) says the step gates on completion. Persists
+   * status -> 'awaiting_review' + an open StepGate; does NOT advance/activate
+   * a next step — the pipeline simply waits for a human decision.
+   */
+  openStepGate(projectId: string, stepId: string, result: string): void;
   /** Mark a specific pending step 'active' + enrich its prompt (conductor dispatch). */
   activateStep(projectId: string, stepId: string): ProjectStep | null;
   failStep(projectId: string, stepId: string, error: string): void;
@@ -242,6 +252,7 @@ export class StepExecutor {
   async executeStepWithRetry(projectId: string):
     Promise<
       | { ok: true; completedStep: string; response: string; nextStep: ProjectStep | null; project: Project }
+      | { ok: true; gated: true; step: string; project: Project }
       | { ok: false; kind: 'no-project' }
       | { ok: false; kind: 'no-active-step' }
       | { ok: false; kind: 'provider-failure'; detail: string; project: Project }
@@ -298,6 +309,16 @@ export class StepExecutor {
         return { ok: false, kind: 'short-response', reason, project: this.engine.getProject(project.id)! };
       }
 
+      // ── Gate check (M1.3 — ALP-1557, wired here per ALP-1610) ──────────
+      // Mirrors runStep()'s gate branch below: a gated step opens its review
+      // gate instead of completing, so the dashboard's manual "run step"
+      // button surfaces "awaiting review" instead of silently advancing past
+      // a step the user hasn't approved yet.
+      if (resolveStepGate(activeStep, project)) {
+        this.engine.openStepGate(project.id, activeStep.id, response);
+        return { ok: true, gated: true, step: activeStep.label, project: this.engine.getProject(project.id)! };
+      }
+
       const nextStep = this.engine.completeStep(project.id, activeStep.id, response);
 
       return {
@@ -309,6 +330,90 @@ export class StepExecutor {
       };
     } catch (error) {
       this.engine.failStep(project.id, activeStep.id, String(error));
+      return { ok: false, kind: 'error', error: String(error), project: this.engine.getProject(project.id)! };
+    }
+  }
+
+  /**
+   * Rerun an `awaiting_review` step with reviewer feedback folded into its
+   * prompt (M1.5 — ALP-1559, POST .../revise). Unlike executeStepWithRetry
+   * (the plain single-step path, which never touches versioning/gates), this
+   * appends the new response as an immutable version and reopens the gate via
+   * openStepGate/applyStepCompletion — mirroring the file-save + gate-check
+   * runStep already does for the autonomous loop, just for one on-demand step
+   * instead of the whole conductor sweep.
+   */
+  async reviseStep(
+    projectId: string,
+    stepId: string,
+    feedback: string,
+    workspaceDir: string,
+  ): Promise<
+    | { ok: true; response: string; version: number; project: Project }
+    | { ok: false; kind: 'no-project' }
+    | { ok: false; kind: 'no-step' }
+    | { ok: false; kind: 'not-awaiting-review' }
+    | { ok: false; kind: 'provider-failure'; detail: string; project: Project }
+    | { ok: false; kind: 'short-response'; reason: string; project: Project }
+    | { ok: false; kind: 'error'; error: string; project: Project }
+  > {
+    const messageHandler = this.deps.getMessageHandler();
+    if (!messageHandler) throw new Error('ProjectEngine: message handler not wired (call setMessageHandler)');
+    const project = this.engine.getProject(projectId);
+    if (!project) return { ok: false, kind: 'no-project' };
+
+    const step = project.steps.find((s: any) => s.id === stepId);
+    if (!step) return { ok: false, kind: 'no-step' };
+    if (step.status !== 'awaiting_review') return { ok: false, kind: 'not-awaiting-review' };
+
+    step.prompt = `${step.prompt}\n\n## Reviewer feedback (revision requested)\n\n${feedback}`;
+
+    try {
+      const projectContext = await this.engine.buildProjectContext(project, step);
+      const userMessage = await this.buildStepUserMessage(project, step);
+      let response = '';
+
+      await messageHandler(
+        userMessage,
+        'projects',
+        (text: string) => { response = text; },
+        projectContext,
+        step.taskType || undefined,
+      );
+
+      if (!response || response.length < 50) {
+        response = '';
+        await messageHandler(userMessage, 'projects', (text: string) => { response = text; }, projectContext, 'general');
+      }
+
+      if (response && response.startsWith('[AI provider failure]')) {
+        const detail = response.replace(/^\[AI provider failure\]\s*/, '').substring(0, 500);
+        this.engine.failStep(project.id, step.id, detail);
+        return { ok: false, kind: 'provider-failure', detail, project: this.engine.getProject(project.id)! };
+      }
+      if (!response || response.length < 50) {
+        const reason = `AI returned an unusably short response (${response?.length ?? 0} chars) while revising this step.`;
+        this.engine.failStep(project.id, step.id, reason);
+        return { ok: false, kind: 'short-response', reason, project: this.engine.getProject(project.id)! };
+      }
+
+      const { join } = await import('path');
+      const { mkdir, writeFile } = await import('fs/promises');
+      const projectDir = join(workspaceDir, 'projects', project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+      await mkdir(projectDir, { recursive: true });
+      const stepFileName = `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+      const stepContent = `# ${step.label}\n\n${response}`;
+      const version = await docVersionService.appendVersion(projectDir, step.id, stepContent, 'agent-patch', 'Revised from reviewer feedback');
+      await writeFile(join(projectDir, stepFileName), stepContent, 'utf-8');
+
+      // openStepGate re-runs applyStepCompletion — since the step's phase is
+      // still gated, this puts it right back into awaiting_review with a fresh
+      // StepGate, exactly like the first time this step completed.
+      this.engine.openStepGate(project.id, step.id, response);
+
+      return { ok: true, response, version, project: this.engine.getProject(project.id)! };
+    } catch (error) {
+      this.engine.failStep(project.id, step.id, String(error));
       return { ok: false, kind: 'error', error: String(error), project: this.engine.getProject(project.id)! };
     }
   }
@@ -360,14 +465,14 @@ export class StepExecutor {
    * quality loop, file save, context-engine/auto-narrate/assembly hooks.
    */
   async autoExecuteLoop(projectId: string, opts: ExecuteStepOptions): Promise<{
-    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }>;
+    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }>;
     project: Project | undefined;
   }> {
     const messageHandler = this.deps.getMessageHandler();
     if (!messageHandler) throw new Error('ProjectEngine: message handler not wired (call setMessageHandler)');
     const services = this.deps.getStepServices();
 
-    const results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }> = [];
+    const results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }> = [];
 
     const project0 = this.engine.getProject(projectId);
     const hasDeps = !!project0 && project0.steps.some((s: any) => Array.isArray(s.dependsOn));
@@ -388,7 +493,7 @@ export class StepExecutor {
   private async legacySequentialLoop(
     projectId: string,
     opts: ExecuteStepOptions,
-    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }>,
+    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }>,
     messageHandler: MessageHandler,
     services: StepServices,
   ): Promise<void> {
@@ -404,7 +509,10 @@ export class StepExecutor {
 
       const outcome = await this.runStep(projectId, activeStep.id, opts, results, messageHandler, services, true);
       // Legacy contract: ANY failure (provider failure, short response, or a
-      // thrown error) halts the entire run.
+      // thrown error) halts the entire run. A gate (M1.3 — ALP-1557) also
+      // halts the loop the same way — `halt` just means "stop looping" — but
+      // it is NOT a failure: runStep pushes a success:true/gated:true result
+      // and never calls failStep(), so this halt is silent, not an error.
       if (outcome.halt) break;
 
       // Re-check pause AFTER step completes (catches /stop sent during long AI call)
@@ -421,6 +529,12 @@ export class StepExecutor {
    *     completed; let in-flight steps finish, then halt.
    *   - Failure: a failed step is left failed → its dependents' deps never
    *     satisfy → only that branch stalls; independent branches keep running.
+   *   - Gate (M1.3 — ALP-1557): a gated step opens its review gate and lands
+   *     in 'awaiting_review' — NOT 'completed'/'skipped' — so depsSatisfied()
+   *     below blocks its dependents exactly like a failure would, with no new
+   *     scheduling logic: this falls straight out of the existing ready-set
+   *     computation. Independent branches (not downstream of the gate) keep
+   *     dispatching normally.
    *   - Termination: loop ends when nothing is ready AND nothing is in flight.
    * Total concurrent AI calls are bounded by CONCURRENCY (each runStep issues
    * its AI calls sequentially), so no retry storm.
@@ -428,7 +542,7 @@ export class StepExecutor {
   private async conductorLoop(
     projectId: string,
     opts: ExecuteStepOptions,
-    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }>,
+    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }>,
     messageHandler: MessageHandler,
     services: StepServices,
   ): Promise<void> {
@@ -502,20 +616,22 @@ export class StepExecutor {
    * next step) and the conductor (advance=false → completeStepBare; the
    * supervisor owns dispatch).
    *
-   * Returns `{ success, halt }`. `halt` marks a failure that the legacy loop
-   * treats as a hard stop (provider failure / short response / thrown error).
-   * The conductor ignores `halt` — a failed step simply blocks its dependents.
+   * Returns `{ success, halt, gated? }`. `halt` marks either a failure OR a
+   * gate — both stop the legacy loop from advancing — but only a failure
+   * calls failStep()/pushes an error result. The conductor ignores `halt`
+   * either way — a blocked step (failed or gated) simply blocks its
+   * dependents via depsSatisfied(), independent branches keep running.
    * Pushes exactly one entry onto `results`, matching the prior behavior.
    */
   private async runStep(
     projectId: string,
     stepId: string,
     opts: ExecuteStepOptions,
-    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string }>,
+    results: Array<{ step: string; success: boolean; wordCount?: number; error?: string; gated?: boolean }>,
     messageHandler: MessageHandler,
     services: StepServices,
     advance: boolean,
-  ): Promise<{ success: boolean; halt: boolean }> {
+  ): Promise<{ success: boolean; halt: boolean; gated?: boolean }> {
     const { join } = await import('path');
     const { mkdir, writeFile } = await import('fs/promises');
     const workspaceDir = opts.workspaceDir;
@@ -699,14 +815,44 @@ export class StepExecutor {
 
       const wordCount = response.split(/\s+/).length;
 
-      // Save to file
+      // Save to file + append immutable version
       try {
         const projectDir = join(workspaceDir, 'projects', currentProject.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
         await mkdir(projectDir, { recursive: true });
         const stepFileName = `${activeStep.id}-${activeStep.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-        await writeFile(join(projectDir, stepFileName), `# ${activeStep.label}\n\n${response}`, 'utf-8');
+        const canonicalPath = join(projectDir, stepFileName);
+        const stepContent = `# ${activeStep.label}\n\n${response}`;
+
+        // Append to immutable version storage
+        await docVersionService.appendVersion(projectDir, activeStep.id, stepContent);
+
+        // Write canonical/current pointer
+        await writeFile(canonicalPath, stepContent, 'utf-8');
       } catch (err) {
-        logger.debug('step output file save failed', err);
+        logger.debug('step output file save / versioning failed', err);
+      }
+
+      // ── Gate check (M1.3 — ALP-1557) ──────────────────────────────────
+      // A gated step (resolveStepGate() — project-templates.ts) opens its
+      // review gate instead of completing: the version is already written
+      // above, so this only flips status -> 'awaiting_review' and emits a
+      // gate-opened event. Deliberately does NOT call complete() (no
+      // completeStep/completeStepBare) and skips every downstream hook
+      // (context-engine memory, auto-narrate, manuscript assembly) below —
+      // none of that should treat unapproved content as canonical yet.
+      if (resolveStepGate(activeStep, currentProject)) {
+        this.engine.openStepGate(currentProject.id, activeStep.id, response);
+        services.heartbeat?.addWords(wordCount);
+        results.push({ step: activeStep.label, success: true, wordCount, gated: true });
+        services.activityLog?.log({
+          type: 'gate_opened',
+          source: 'internal',
+          goalId: currentProject.id,
+          stepLabel: activeStep.label,
+          message: `🔒 "${activeStep.label}" is ready for your review — awaiting approval before the pipeline continues.`,
+          metadata: { wordCount },
+        });
+        return { success: true, halt: true, gated: true };
       }
 
       complete(response);
@@ -765,6 +911,12 @@ export class StepExecutor {
           log.error('[context-engine] Hook error:', contextErr);
         }
       });
+
+      // SEAM (ALP-1595 follow-on): book-bible.md is currently compiled
+      // on-demand only (POST /api/projects/:id/book-bible). Auto-regenerate
+      // was left out of v1 scope — when it's built, the natural place to
+      // trigger it is right here, gated on `isBibleStep` above, since that's
+      // already the signal that this step's output feeds the bible.
 
       // ── Auto-narrate completed chapter (opt-in via project.context.autoNarrate) ──
       // Inspired by OpenClaw's chat-scoped /tts auto controls. Generates an audio

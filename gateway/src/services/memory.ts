@@ -113,8 +113,24 @@ export class MemoryService {
         // Sort by relevance score descending, then alphabetically for ties
         scored.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
 
+        // Budget the accumulated block, not just each entry. This was
+        // previously unbounded — up to 10 files x 5,000 chars = 50,000
+        // chars — and unlike every other system-prompt section, it wasn't
+        // in the trim list message-pipeline.ts applies when the total
+        // prompt runs over budget, so it could sit at the top of the
+        // context indefinitely. Since entries are already sorted by
+        // relevance, capping the running total here keeps the
+        // highest-signal material and drops the low-relevance tail,
+        // instead of leaving everything downstream to be truncated by an
+        // equal, arbitrary amount (or not at all).
+        const RELEVANT_MEMORY_BUDGET_CHARS = 8000;
+        let used = 0;
         for (const { file, content } of scored.slice(0, 10)) {
-          parts.push(`[${file}]: ${content.substring(0, 5000)}`);
+          if (used >= RELEVANT_MEMORY_BUDGET_CHARS) break;
+          const remaining = RELEVANT_MEMORY_BUDGET_CHARS - used;
+          const excerpt = content.substring(0, Math.min(5000, remaining));
+          parts.push(`[${file}]: ${excerpt}`);
+          used += excerpt.length;
         }
       }
     }
@@ -202,6 +218,15 @@ export class MemoryService {
     const dir = join(this.memoryDir, 'book-bible', safeProject);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, safeFile), content);
+  }
+
+  /** Read back an entry saved via saveBookBibleEntry. Returns null if it doesn't exist yet. */
+  async getBookBibleEntry(projectId: string, filename: string): Promise<string | null> {
+    const safeProject = sanitizeSegment(projectId, 'project');
+    const safeFile = sanitizeSegment(filename, 'entry.md');
+    const filePath = join(this.memoryDir, 'book-bible', safeProject, safeFile);
+    if (!existsSync(filePath)) return null;
+    return readFile(filePath, 'utf-8');
   }
 
   /**

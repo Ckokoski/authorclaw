@@ -1,0 +1,88 @@
+# AuthorAgent — NAS compose project (ALP-1725)
+#
+# Board policy ALP-673/ALP-1025: docker workloads run on the NAS only, never a
+# dev host. ALP-714: compose apps live under /volume1/docker, not /volume1/data.
+#
+# This is a standalone compose project (`authoragent`), NOT part of the
+# render-stack mono — AuthorAgent is a separate product from the render tools
+# and shares none of their nginx front door, registry tags, or data dirs.
+#
+# Deployed by scripts/deploy-nas.sh, which syncs this file plus nginx.conf to
+# $AUTHORAGENT_DIR on the NAS and provisions the .env next to it.
+#
+# ── Why the proxy exists ──────────────────────────────────────────────────
+# The gateway has NO authentication of its own (gateway/src/api/routes.ts) and
+# ships a credential vault plus filesystem tools. It therefore binds 127.0.0.1
+# by default. Publishing its port straight onto the NAS would expose an
+# unauthenticated agent to the whole LAN and tailnet. Instead the gateway
+# publishes nothing; `authoragent-proxy` is the only host-published port and it
+# demands HTTP basic auth. Do not add a `ports:` entry to the authoragent
+# service — that silently reopens the hole.
+
+name: authoragent
+
+services:
+  authoragent:
+    image: ${AUTHORAGENT_REGISTRY:-localhost:5555}/authoragent:${AUTHORAGENT_TAG:-latest}
+    container_name: authoragent
+    restart: unless-stopped
+    # Deliberately no `ports:` — reachable only via authoragent-proxy. See above.
+    expose:
+      - "3847"
+    environment:
+      NODE_ENV: production
+      # Container bind address. Safe only because the published port belongs to
+      # the auth proxy, not this service.
+      AUTHORCLAW_HOST: 0.0.0.0
+      AUTHORCLAW_PORT: "3847"
+      # Browser-visible origin(s) of the proxy, for CORS + the socket.io origin
+      # allowlist. server.host here is 0.0.0.0, which the gateway can't turn
+      # into a real origin on its own.
+      AUTHORCLAW_ALLOWED_ORIGINS: ${AUTHORAGENT_ALLOWED_ORIGINS:-}
+      AUTHORCLAW_VAULT_KEY: ${AUTHORCLAW_VAULT_KEY:?AUTHORCLAW_VAULT_KEY must be set in .env — without it the vault re-keys on every restart and stored API keys are lost}
+    volumes:
+      # Bind mounts, not named volumes: the workspace holds manuscripts, so it
+      # has to be inspectable and backed up from the NAS filesystem. Ownership
+      # is fixed up by deploy-nas.sh's provision step (Synology ACLs otherwise
+      # leave these unwritable by the image's non-root user).
+      - ${AUTHORAGENT_DATA_DIR:-/volume1/docker/authoragent}/workspace:/app/workspace
+      - ${AUTHORAGENT_DATA_DIR:-/volume1/docker/authoragent}/vault:/app/config/.vault
+    # mem_limit/cpu_shares, not deploy.resources: the DSM kernel has no CPU CFS
+    # scheduler, so a `cpus:` limit is rejected outright at container create
+    # ("NanoCPUs can not be set"). Same convention as the render-stack mono.
+    mem_limit: ${AUTHORAGENT_MEM_LIMIT:-2048m}
+    cpu_shares: ${AUTHORAGENT_CPU_SHARES:-1024}
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - authoragent-net
+
+  authoragent-proxy:
+    image: nginx:1.27-alpine
+    container_name: authoragent-proxy
+    restart: unless-stopped
+    depends_on:
+      - authoragent
+    ports:
+      - "${AUTHORAGENT_PORT:-8427}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./htpasswd:/etc/nginx/htpasswd:ro
+    mem_limit: ${AUTHORAGENT_PROXY_MEM_LIMIT:-128m}
+    cpu_shares: ${AUTHORAGENT_PROXY_CPU_SHARES:-512}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # /healthz is the one unauthenticated route the proxy forwards, so this
+      # also proves the upstream gateway is answering.
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    networks:
+      - authoragent-net
+
+networks:
+  authoragent-net:
+    driver: bridge

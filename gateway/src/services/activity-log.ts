@@ -20,6 +20,7 @@ export type ActivityType =
   | 'step_started'
   | 'step_completed'
   | 'step_failed'
+  | 'gate_opened'
   | 'chat_message'
   | 'skill_matched'
   | 'file_saved'

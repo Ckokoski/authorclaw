@@ -245,7 +245,7 @@ export function registerSystemRoutes(ctx: ApiContext): void {
       await services.audit.log('vault', 'key_stored', { key });
 
       // Auto-refresh AI providers when an API key is stored
-      const apiKeyNames = ['gemini_api_key', 'deepseek_api_key', 'anthropic_api_key', 'openai_api_key'];
+      const apiKeyNames = ['gemini_api_key', 'deepseek_api_key', 'anthropic_api_key', 'openai_api_key', 'openrouter_api_key'];
       let refreshedProviders: string[] | undefined;
       if (apiKeyNames.includes(key)) {
         refreshedProviders = await services.aiRouter.reinitialize();
@@ -269,6 +269,22 @@ export function registerSystemRoutes(ctx: ApiContext): void {
       });
     } catch (error) {
       res.status(500).json({ error: 'Failed to refresh providers: ' + String(error) });
+    }
+  });
+
+  // Ad-hoc connectivity test for one provider (Connections [Test] button).
+  // Reuses the same reachability probes run at startup — never spends a
+  // real completion call.
+  app.post('/api/providers/:id/test', async (req: Request, res: Response) => {
+    const router = services.aiRouter;
+    if (!router || typeof router.testProvider !== 'function') {
+      return res.status(503).json({ ok: false, message: 'AI router not available' });
+    }
+    try {
+      const result = await router.testProvider(String(req.params.id || ''));
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, message: err?.message || 'Test failed' });
     }
   });
 
@@ -433,9 +449,11 @@ export function registerSystemRoutes(ctx: ApiContext): void {
       'heartbeat.enableReminders', 'heartbeat.quietHoursStart',
       'heartbeat.quietHoursEnd', 'heartbeat.autonomousEnabled',
       'heartbeat.autonomousIntervalMinutes', 'heartbeat.maxAutonomousStepsPerWake',
-      'ai.defaultTemperature', 'ai.preferredProvider', 'ai.preferredImageProvider',
+      'ai.defaultTemperature', 'ai.preferredProvider', 'ai.preferredProviderFallback', 'ai.preferredImageProvider',
       'ai.ollama.enabled', 'ai.ollama.endpoint', 'ai.ollama.model',
+      'ai.openai.endpoint', 'ai.openai.model',
       'ai.openrouter.model',
+      'ai.claude-cli.enabled', 'ai.claude-cli.binPath',
       'bridges.telegram.enabled', 'bridges.telegram.pairingEnabled',
     ];
     if (!safePaths.includes(path)) {
@@ -448,6 +466,9 @@ export function registerSystemRoutes(ctx: ApiContext): void {
       // Sync global provider preference to router
       if (path === 'ai.preferredProvider') {
         services.aiRouter.setGlobalPreferredProvider(value || null);
+      }
+      if (path === 'ai.preferredProviderFallback') {
+        services.aiRouter.setGlobalPreferredProviderFallback(value || null);
       }
       res.json({ success: true, path, value });
     } catch (err: any) {

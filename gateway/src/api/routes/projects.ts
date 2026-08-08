@@ -7,7 +7,7 @@ import { Request, Response } from 'express';
 import type { ApiContext } from '../context.js';
 
 export function registerProjectRoutes(ctx: ApiContext): void {
-  const { app, gateway, services, baseDir } = ctx;
+  const { app, gateway, services, workspaceDir } = ctx;
 
   // ═══════════════════════════════════════════════════════════
   // Project Engine (autonomous project-based task planning)
@@ -23,7 +23,7 @@ export function registerProjectRoutes(ctx: ApiContext): void {
     const { join: j } = await import('path');
     const { readFile: rf } = await import('fs/promises');
     const { existsSync: ex } = await import('fs');
-    const customPath = j(baseDir, 'workspace', '.config', 'custom-project-templates.json');
+    const customPath = j(workspaceDir, '.config', 'custom-project-templates.json');
     let custom: any[] = [];
     if (ex(customPath)) {
       try { custom = JSON.parse(await rf(customPath, 'utf-8')); } catch { /* ok */ }
@@ -44,7 +44,7 @@ export function registerProjectRoutes(ctx: ApiContext): void {
     const { readFile: rf, writeFile: wf, mkdir: mkd } = await import('fs/promises');
     const { existsSync: ex } = await import('fs');
     const { randomBytes } = await import('crypto');
-    const configDir = j(baseDir, 'workspace', '.config');
+    const configDir = j(workspaceDir, '.config');
     await mkd(configDir, { recursive: true });
     const customPath = j(configDir, 'custom-project-templates.json');
     let custom: any[] = [];
@@ -61,7 +61,7 @@ export function registerProjectRoutes(ctx: ApiContext): void {
     const { join: j } = await import('path');
     const { readFile: rf, writeFile: wf } = await import('fs/promises');
     const { existsSync: ex } = await import('fs');
-    const customPath = j(baseDir, 'workspace', '.config', 'custom-project-templates.json');
+    const customPath = j(workspaceDir, '.config', 'custom-project-templates.json');
     if (!ex(customPath)) {
       return res.json({ success: false, error: 'No custom templates' });
     }
@@ -244,6 +244,15 @@ export function registerProjectRoutes(ctx: ApiContext): void {
 
     const result = await engine.executeStepWithRetry(req.params.id);
 
+    if ('gated' in result && result.gated) {
+      return res.json({
+        success: true,
+        gated: true,
+        step: result.step,
+        project: result.project,
+      });
+    }
+
     if (result.ok) {
       return res.json({
         success: true,
@@ -299,7 +308,7 @@ export function registerProjectRoutes(ctx: ApiContext): void {
         const { unlink } = await import('fs/promises');
         const { join: jp } = await import('path');
         const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const projectDir = jp(baseDir, 'workspace', 'projects', projectSlug);
+        const projectDir = jp(workspaceDir, 'projects', projectSlug);
         const filename = `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
         await unlink(jp(projectDir, filename)).catch(() => {});
       } catch { /* non-fatal */ }
@@ -327,7 +336,7 @@ export function registerProjectRoutes(ctx: ApiContext): void {
         const { readdirSync, existsSync: ex } = await import('fs');
         const { join: jp } = await import('path');
         const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const projectDir = jp(baseDir, 'workspace', 'projects', projectSlug);
+        const projectDir = jp(workspaceDir, 'projects', projectSlug);
         if (ex(projectDir)) {
           // Only delete .md files, preserve manuscript / compiled-output / revised files
           // unless restart is full (no keepCompleted).
@@ -366,8 +375,6 @@ export function registerProjectRoutes(ctx: ApiContext): void {
     // file save, and the context-engine / auto-narrate / assembly hooks — now
     // lives in ProjectEngine.autoExecuteLoop. It re-checks pause/complete state
     // internally so /pause and /stop keep working during long runs.
-    const { join } = await import('path');
-    const workspaceDir = join(baseDir, 'workspace');
     const { results } = await engine.autoExecuteLoop(req.params.id, { workspaceDir });
 
     const finalProject = engine.getProject(req.params.id);
@@ -458,7 +465,10 @@ export function registerProjectRoutes(ctx: ApiContext): void {
     const project = engine.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const { provider } = req.body;
-    const valid = ['gemini', 'deepseek', 'claude', 'openai', 'ollama', '', null];
+    const knownProviders: string[] = typeof services.aiRouter?.getKnownProviders === 'function'
+      ? services.aiRouter.getKnownProviders()
+      : ['gemini', 'deepseek', 'claude', 'openai', 'ollama'];
+    const valid = [...knownProviders, '', null];
     if (!valid.includes(provider)) return res.status(400).json({ error: 'Invalid provider' });
     (project as any).preferredProvider = provider || undefined;
     project.updatedAt = new Date().toISOString();
@@ -485,7 +495,7 @@ export function registerProjectRoutes(ctx: ApiContext): void {
         const { rm } = await import('fs/promises');
         const { existsSync: ex } = await import('fs');
         const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
+        const projectDir = j(workspaceDir, 'projects', projectSlug);
         if (ex(projectDir)) {
           const { readdir } = await import('fs/promises');
           const entries = await readdir(projectDir);

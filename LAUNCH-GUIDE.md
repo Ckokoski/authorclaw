@@ -95,6 +95,41 @@ Or set up a reverse proxy (Nginx/Caddy) with HTTPS + auth for public access.
 | Memory/Bible | `workspace/memory/` |
 | Self-improvement | `workspace/.agent/` |
 
+## Multiple Books
+
+One running AuthorAgent instance serves ONE **active book** at a time — all of
+a book's state (memory, soul, book bible, personas, images, costs, etc.) is
+per-book. `AUTHORCLAW_WORKSPACE_DIR` (see `.env.example`) is a ROOT that can
+hold many isolated per-book workspaces at `<root>/<book-slug>/`.
+
+**Existing single-book installs need no changes.** If the root already looks
+like a flat single-book workspace (has `memory/`, `soul/`, or `projects/`
+directly inside it) and no active book is selected, it's used in place exactly
+as before.
+
+To add a second book to the same root:
+
+```bash
+npm run book -- list                    # show books under the root + which is active
+npm run book -- create "My Second Book" # scaffold <root>/my-second-book/
+npm run book -- use my-second-book      # writes <root>/.active-book
+# restart the gateway — switching is restart-scoped, services are boot-time singletons
+```
+
+`AUTHORCLAW_ACTIVE_BOOK` in `.env` overrides the `.active-book` pointer file if
+you'd rather pin it there. Migrating an existing flat install into the
+multi-book layout on purpose (e.g. to give it a proper slug alongside new
+books) is one command and moves data, it doesn't copy/delete it:
+
+```bash
+npm run book -- migrate-legacy the-algorithm-of-wanting
+```
+
+**Need two books running at the same time, right now, with zero code
+changes?** Skip all of the above and start a second AuthorAgent process with
+its own `AUTHORCLAW_WORKSPACE_DIR` and its own `server.port`
+(`config/user.json`) — fully isolated, two processes instead of one.
+
 ## API Keys (Dashboard > Settings)
 
 All keys are stored in the encrypted vault. Set them via the dashboard:

@@ -9,6 +9,7 @@
   },
   "ai": {
     "preferredProvider": null,
+    "preferredProviderFallback": null,
     "preferredImageProvider": null,
     "maxHistoryMessages": 20,
     "defaultTemperature": 0.7,
@@ -31,6 +32,20 @@
     },
     "openrouter": {
       "model": "anthropic/claude-sonnet-4-5"
+    },
+    "claude-cli": {
+      "enabled": false,
+      "model": "sonnet",
+      "binPath": "",
+      "maxConcurrent": 2,
+      "inactivityTimeoutMs": 60000,
+      "maxTimeoutMs": 900000,
+      "firstTokenTimeoutMs": 120000,
+      "firstTokenCeilingMs": 420000,
+      "queueWaitTimeoutMs": 600000,
+      "minSpawnGapMs": 1500,
+      "maxBackoffMs": 120000,
+      "canary": true
     }
   },
   "memory": {
