@@ -33,6 +33,12 @@
   --warn: #f59e0b;
   --sidebar-w: 240px;
   --sidebar-collapsed: 64px;
+  /* Default width for the chat drawer — was a fixed 380px, cramped for the
+     long-form responses this app routinely generates (full chapters,
+     multi-thousand-word outlines). Now a CSS var so the drag handle (see
+     chatDrawerResizeHandle below) can override it live; the value here is
+     just the first-run default before any user preference is saved. */
+  --chat-drawer-w: 760px;
   --radius: 12px;
   --radius-sm: 8px;
   --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
@@ -392,7 +398,7 @@ textarea { resize: vertical; min-height: 60px; }
   position: fixed;
   top: 0;
   right: 0;
-  width: 380px;
+  width: var(--chat-drawer-w);
   max-width: 92vw;
   height: 100vh;
   background: var(--bg-secondary);
@@ -404,7 +410,25 @@ textarea { resize: vertical; min-height: 60px; }
   transition: transform 0.25s ease;
   z-index: 500;
 }
+/* No transition on width while actively dragging — otherwise every mousemove
+   fights a 0.25s easing and the drawer visibly lags behind the cursor. */
+.chat-drawer.resizing { transition: none; }
 .chat-drawer.open { transform: translateX(0); }
+.chat-drawer-resize-handle {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 501;
+  background: transparent;
+}
+.chat-drawer-resize-handle:hover,
+.chat-drawer-resize-handle.dragging {
+  background: var(--accent);
+  opacity: 0.4;
+}
 .chat-drawer-header {
   display: flex;
   align-items: center;
@@ -1430,19 +1454,43 @@ textarea { resize: vertical; min-height: 60px; }
         </div>
       </div>
 
+      <!-- Local / Custom OpenAI-compatible endpoint (LM Studio, vLLM, llama.cpp) -->
+      <div class="card" id="openaiEndpointCard">
+        <div class="card-title">Local AI (LM Studio / vLLM / llama.cpp) — free, no key</div>
+        <p class="hint" style="margin-bottom:12px;">Point the OpenAI provider slot at any OpenAI-compatible local server instead of api.openai.com. Requests through a custom endpoint are billed at $0 and never count against the budget cap. Leave blank to use api.openai.com (requires an OpenAI API key above).</p>
+        <div class="form-group">
+          <label>Endpoint</label>
+          <input type="text" id="openaiEndpointInput" placeholder="http://localhost:1234/v1">
+        </div>
+        <button class="success" id="btnSaveOpenaiEndpoint">Save & Reconnect</button>
+      </div>
+
+      <!-- Claude Code CLI (subscription) -->
+      <div class="card" id="claudeCliCard">
+        <div class="card-title">Claude Code CLI (subscription) — free</div>
+        <p class="hint" style="margin-bottom:12px;">Rides an existing <code>claude login</code> session (Pro/Max subscription) instead of a metered API key. Requires the <code>claude</code> CLI installed and logged in on this machine.</p>
+        <div class="form-group-inline">
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="claudeCliEnabled" style="width:auto;"> Enabled</label>
+          </div>
+          <div class="form-group">
+            <label>CLI binary path (optional)</label>
+            <input type="text" id="claudeCliBinPath" placeholder="auto-detected">
+          </div>
+        </div>
+        <button class="success" id="btnSaveClaudeCli">Save & Reconnect</button>
+      </div>
+
       <!-- Global AI Provider -->
       <div class="card">
         <div class="card-title">Default AI Provider</div>
         <p class="hint" style="margin-bottom:12px;">Force all tasks to use one provider instead of smart tier routing. Per-project settings override this.</p>
         <div class="form-group">
+          <!-- Options are populated dynamically from GET /api/models (see
+               populateGlobalProviderOptions) so this list can never drift out
+               of sync with the router's known providers (e.g. claude-cli). -->
           <select id="globalProviderSelect">
             <option value="">Auto — smart tiered routing (recommended)</option>
-            <option value="ollama">Ollama (local, free)</option>
-            <option value="gemini">Gemini (free tier)</option>
-            <option value="deepseek">DeepSeek (cheap)</option>
-            <option value="openrouter">OpenRouter (one key, any model)</option>
-            <option value="claude">Claude (premium)</option>
-            <option value="openai">OpenAI GPT (premium)</option>
           </select>
         </div>
         <button class="success" id="btnSaveGlobalProvider">Save Provider</button>
@@ -1657,6 +1705,7 @@ textarea { resize: vertical; min-height: 60px; }
      ═══════════════════════════════════════════════ -->
 <div class="chat-drawer-overlay" id="chatDrawerOverlay"></div>
 <div class="chat-drawer" id="chatDrawer">
+  <div class="chat-drawer-resize-handle" id="chatDrawerResizeHandle" title="Drag to resize"></div>
   <div class="chat-drawer-header">
     <span class="card-title">Chat with AuthorAgent</span>
     <div style="display:flex;align-items:center;gap:8px;">
@@ -1829,6 +1878,8 @@ function loadSettingsConnections() {
   loadKeys();
   loadAiModels();
   loadOllamaConfig();
+  loadOpenaiEndpointConfig();
+  loadClaudeCliConfig();
   loadOpenrouterConfig();
   loadGlobalProvider();
   loadGlobalImageProvider();
@@ -2154,6 +2205,80 @@ document.addEventListener('keydown', function(e) {
 });
 // Restore persisted state on load (default closed if never set).
 applyChatDrawerState(isChatDrawerOpen());
+
+// ── Chat Drawer Resize ──
+// Drag the left edge to resize; width persists across sessions. Was a fixed
+// 380px, cramped for the long-form output this app routinely generates
+// (full chapters, multi-thousand-word outlines) — see --chat-drawer-w above.
+var CHAT_DRAWER_WIDTH_KEY = 'authorclaw_chat_drawer_width';
+var CHAT_DRAWER_MIN_WIDTH = 340;
+function getChatDrawerMaxWidth() {
+  // Leave a little breathing room so the drawer can never fully swallow
+  // the main content area on a narrower laptop screen.
+  return Math.min(1400, window.innerWidth - 200);
+}
+function clampChatDrawerWidth(px) {
+  return Math.max(CHAT_DRAWER_MIN_WIDTH, Math.min(getChatDrawerMaxWidth(), px));
+}
+function applyChatDrawerWidth(px) {
+  document.documentElement.style.setProperty('--chat-drawer-w', px + 'px');
+}
+function restoreChatDrawerWidth() {
+  var saved;
+  try { saved = parseInt(localStorage.getItem(CHAT_DRAWER_WIDTH_KEY), 10); } catch (e) { saved = NaN; }
+  if (!isNaN(saved) && saved > 0) applyChatDrawerWidth(clampChatDrawerWidth(saved));
+}
+(function setupChatDrawerResize() {
+  var handle = document.getElementById('chatDrawerResizeHandle');
+  var drawer = document.getElementById('chatDrawer');
+  if (!handle || !drawer) return;
+
+  var dragging = false;
+
+  function onMove(e) {
+    if (!dragging) return;
+    var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    // Drawer is right-anchored (right: 0), so its width is just the
+    // distance from the cursor to the viewport's right edge.
+    var width = clampChatDrawerWidth(window.innerWidth - clientX);
+    applyChatDrawerWidth(width);
+  }
+  function onEnd() {
+    if (!dragging) return;
+    dragging = false;
+    drawer.classList.remove('resizing');
+    handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    var current = drawer.getBoundingClientRect().width;
+    try { localStorage.setItem(CHAT_DRAWER_WIDTH_KEY, String(Math.round(current))); } catch (e) { /* ignore */ }
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onEnd);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onEnd);
+  }
+  function onStart(e) {
+    dragging = true;
+    drawer.classList.add('resizing');
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none'; // prevent text selection while dragging
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onEnd);
+    document.addEventListener('touchmove', onMove, { passive: true });
+    document.addEventListener('touchend', onEnd);
+    e.preventDefault();
+  }
+  handle.addEventListener('mousedown', onStart);
+  handle.addEventListener('touchstart', onStart, { passive: false });
+
+  // Re-clamp on viewport resize so a saved wide-monitor width doesn't blow
+  // past the (window-dependent) max if the browser window shrinks later.
+  window.addEventListener('resize', function() {
+    var current = drawer.getBoundingClientRect().width;
+    var clamped = clampChatDrawerWidth(current);
+    if (clamped !== current) applyChatDrawerWidth(clamped);
+  });
+})();
+restoreChatDrawerWidth();
 
 // ================================================================
 // PROJECTS PANEL
@@ -3181,6 +3306,13 @@ function openProjectDetail(id) {
         '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">Check this book\'s outline against a known dramatic structure.</div>' +
         '<button class="secondary" id="pdStructureRun" style="font-size:12px;padding:6px 14px;">Analyze Structure</button>' +
         '<div id="pdStructureResults" style="margin-top:12px;"></div>' +
+        '<div class="card-title" style="margin-top:20px;">Book Bible</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">One canonical, reviewable doc — characters, timeline, locations, world rules, and items — compiled from tracked story context.</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+          '<button class="secondary" id="pdBibleCompile" style="font-size:12px;padding:6px 14px;">Compile Book Bible</button>' +
+          '<button class="secondary" id="pdBibleDownload" style="font-size:12px;padding:6px 14px;display:none;">Download .md</button>' +
+        '</div>' +
+        '<div id="pdBibleContent" style="font-size:12px;color:var(--muted);"></div>' +
       '</div>' +
       // ── WRITE (default) ──
       '<div class="card pd-tab-content" id="pdTabWrite">' +
@@ -3349,6 +3481,12 @@ function openProjectDetail(id) {
   var pdCompile = detail.querySelector('#pdCompile');
   if (pdCompile) pdCompile.addEventListener('click', function() { compileProject(id); });
 
+  // Wire Book Bible compile/download (in Plan stage)
+  var pdBibleCompile = detail.querySelector('#pdBibleCompile');
+  if (pdBibleCompile) pdBibleCompile.addEventListener('click', function() { compileProjectBible(id); });
+  var pdBibleDownload = detail.querySelector('#pdBibleDownload');
+  if (pdBibleDownload) pdBibleDownload.addEventListener('click', function() { downloadProjectBible(id); });
+
   // ── Stage tabs ──
   var loaded = { plan: false, polish: false };
   function activateStage(tabName) {
@@ -3361,7 +3499,7 @@ function openProjectDetail(id) {
     detail.querySelectorAll('.pd-tab-content').forEach(function(c) { c.style.display = 'none'; });
     var target = detail.querySelector('#pdTab' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
     if (target) target.style.display = 'block';
-    if (tabName === 'plan' && !loaded.plan) { loaded.plan = true; loadProjectContext(id); }
+    if (tabName === 'plan' && !loaded.plan) { loaded.plan = true; loadProjectContext(id); loadProjectBible(id); }
     if (tabName === 'polish' && !loaded.polish) { loaded.polish = true; loadProjectFiles(id); }
   }
   detail.querySelectorAll('.pd-tab').forEach(function(tab) {
@@ -3604,6 +3742,62 @@ function compileProject(id) {
       showToast(data.error || 'Compile failed', 'error');
     }
   }).catch(function(e) { showToast('Compile failed: ' + e.message, 'error'); });
+}
+
+// ================================================================
+// BOOK BIBLE
+// ================================================================
+var bibleContentCache = {};
+
+function renderBibleContent(id, content) {
+  var el = document.getElementById('pdBibleContent');
+  var dl = document.getElementById('pdBibleDownload');
+  if (!el) return;
+  bibleContentCache[id] = content;
+  if (dl) dl.style.display = content ? 'inline-block' : 'none';
+  if (!content) {
+    el.innerHTML = '<span style="color:var(--muted);">Not compiled yet. Click "Compile Book Bible" to generate it from tracked story context.</span>';
+    return;
+  }
+  el.innerHTML = '<pre style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:12px;border-radius:6px;max-height:400px;overflow:auto;border:1px solid var(--border);">' + esc(content) + '</pre>';
+}
+
+function loadProjectBible(id) {
+  var el = document.getElementById('pdBibleContent');
+  if (el) el.innerHTML = '<span style="color:var(--muted);">Loading...</span>';
+  api('GET', '/api/projects/' + id + '/book-bible').then(function(data) {
+    renderBibleContent(id, data.content || '');
+  }).catch(function() {
+    // Not compiled yet (404) or a transient load failure — same empty state either way.
+    renderBibleContent(id, '');
+  });
+}
+
+function compileProjectBible(id) {
+  showToast('Compiling book bible...', 'info');
+  api('POST', '/api/projects/' + id + '/book-bible').then(function(data) {
+    if (data.success) {
+      var counts = data.counts || {};
+      showToast('Book bible compiled! ' + (counts.characters || 0) + ' characters, ' + (counts.locations || 0) + ' locations.', 'success');
+      renderBibleContent(id, data.content);
+    } else {
+      showToast(data.error || 'Book bible compile failed', 'error');
+    }
+  }).catch(function(e) { showToast('Book bible compile failed: ' + e.message, 'error'); });
+}
+
+function downloadProjectBible(id) {
+  var content = bibleContentCache[id];
+  if (!content) return;
+  var blob = new Blob([content], { type: 'text/markdown' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'book-bible.md';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ================================================================
@@ -4076,8 +4270,39 @@ if (btnLoadKeysFromFiles) {
 // POSTs { provider, model } and patches the row from the response.
 var providerLabels = {
   ollama: 'Ollama (local)', gemini: 'Gemini', deepseek: 'DeepSeek',
-  claude: 'Claude / Anthropic', openai: 'OpenAI GPT', openrouter: 'OpenRouter'
+  claude: 'Claude / Anthropic', openai: 'OpenAI GPT', openrouter: 'OpenRouter',
+  'claude-cli': 'Claude Code CLI (subscription)',
+  'claude-cli-opus': 'Claude Code CLI (subscription, opus)'
 };
+
+// Short "(tier)" suffix for the Default AI Provider dropdown — mirrors the
+// AI Models list's tier badge so both surfaces describe cost the same way.
+function providerTierSuffix(tier) {
+  if (tier === 'free') return 'free';
+  if (tier === 'cheap') return 'cheap';
+  if (tier === 'local') return 'local, $0';
+  return 'premium';
+}
+
+// Populates #globalProviderSelect from GET /api/models's provider list
+// instead of a hardcoded <option> set, so it can never omit a real provider
+// (e.g. claude-cli) or offer one the router doesn't actually know about.
+// claude-cli-opus is deliberately excluded — it's an automatic swap for
+// prose-quality task types (see router.ts CLAUDE_CLI_PREMIUM_TASKS), not a
+// provider a user picks directly as their default.
+function populateGlobalProviderOptions(providers) {
+  var sel = document.getElementById('globalProviderSelect');
+  if (!sel) return;
+  var current = sel.value;
+  var html = '<option value="">Auto — smart tiered routing (recommended)</option>';
+  providers.forEach(function(p) {
+    if (p.id === 'claude-cli-opus') return;
+    var label = (providerLabels[p.id] || p.id) + ' (' + providerTierSuffix(p.tier) + ')';
+    html += '<option value="' + esc(p.id) + '">' + esc(label) + '</option>';
+  });
+  sel.innerHTML = html;
+  sel.value = current;
+}
 
 function formatModelPrice(price) {
   if (!price) return '';
@@ -4116,6 +4341,7 @@ function renderAiModels(providers) {
       '<input type="text" class="ai-model-custom" data-provider="' + esc(p.id) + '" placeholder="custom model name" ' +
         'style="min-width:180px;display:' + (isCustom ? 'inline-block' : 'none') + ';" value="' + (isCustom ? esc(p.currentModel) : '') + '">' +
       '<button class="small btn-save-model" data-provider="' + esc(p.id) + '">Save</button>' +
+      '<button class="small btn-test-provider" data-provider="' + esc(p.id) + '">Test</button>' +
       availTag;
     wrap.appendChild(row);
 
@@ -4125,6 +4351,12 @@ function renderAiModels(providers) {
     priceEl.style.cssText = 'margin-top:4px;';
     priceEl.innerHTML = 'Current: <code>' + esc(p.currentModel) + '</code> — ' + formatModelPrice(p.price);
     wrap.appendChild(priceEl);
+
+    var testResultEl = document.createElement('div');
+    testResultEl.className = 'hint';
+    testResultEl.setAttribute('data-test-result-for', p.id);
+    testResultEl.style.cssText = 'margin-top:4px;display:none;';
+    wrap.appendChild(testResultEl);
 
     el.appendChild(wrap);
   });
@@ -4156,6 +4388,33 @@ function renderAiModels(providers) {
           }
         }
       }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+    });
+  });
+
+  // Test handler — POSTs to /api/providers/:id/test and shows the result
+  // inline (reachability/auth probe, not a real completion call).
+  el.querySelectorAll('.btn-test-provider').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var providerId = btn.getAttribute('data-provider');
+      var resultEl = el.querySelector('[data-test-result-for="' + providerId + '"]');
+      btn.disabled = true;
+      btn.textContent = 'Testing…';
+      api('POST', '/api/providers/' + encodeURIComponent(providerId) + '/test').then(function(data) {
+        if (resultEl) {
+          resultEl.style.display = 'block';
+          resultEl.style.color = data && data.ok ? 'var(--success)' : 'var(--danger)';
+          resultEl.textContent = (data && data.ok ? '✓ ' : '✗ ') + ((data && data.message) || 'No response');
+        }
+      }).catch(function(e) {
+        if (resultEl) {
+          resultEl.style.display = 'block';
+          resultEl.style.color = 'var(--danger)';
+          resultEl.textContent = '✗ ' + e.message;
+        }
+      }).finally(function() {
+        btn.disabled = false;
+        btn.textContent = 'Test';
+      });
     });
   });
 }
@@ -4225,9 +4484,92 @@ if (btnSaveOllama) {
     ]).then(function() {
       // Trigger AI router reinitialization so the new endpoint takes effect immediately
       return api('POST', '/api/providers/refresh');
-    }).then(function() {
-      showToast('Ollama config saved & reconnected', 'success');
+    }).then(function(refreshData) {
+      var providers = (refreshData && refreshData.providers) || [];
+      var connected = providers.some(function(p) { return p.id === 'ollama'; });
+      if (connected) {
+        showToast('Ollama config saved & reconnected', 'success');
+      } else {
+        // The endpoint saved fine, but didn't answer the /api/tags probe —
+        // most likely pointed at a non-Ollama host/port. Surfacing this
+        // beats failing silently until the next completion call.
+        showToast('Saved, but "' + ep + '" did not respond like an Ollama server — check the URL and that "ollama serve" is running.', 'error');
+      }
       loadOllamaConfig();
+      loadStatus();
+    }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+  });
+}
+
+// ── Local / custom OpenAI-compatible endpoint (LM Studio, vLLM, llama.cpp) ──
+// Config path ai.openai.endpoint was already an allowed /api/config/update
+// target (system.ts safePaths) but had no UI field — this was only settable
+// by hand-editing config/user.json.
+function loadOpenaiEndpointConfig() {
+  api('GET', '/api/config').then(function(data) {
+    var ep = document.getElementById('openaiEndpointInput');
+    if (ep) ep.value = (data.ai && data.ai.openai && data.ai.openai.endpoint) || '';
+  });
+}
+
+var btnSaveOpenaiEndpoint = document.getElementById('btnSaveOpenaiEndpoint');
+if (btnSaveOpenaiEndpoint) {
+  btnSaveOpenaiEndpoint.addEventListener('click', function() {
+    var ep = document.getElementById('openaiEndpointInput').value.trim();
+    api('POST', '/api/config/update', { path: 'ai.openai.endpoint', value: ep }).then(function() {
+      return api('POST', '/api/providers/refresh');
+    }).then(function(refreshData) {
+      var providers = (refreshData && refreshData.providers) || [];
+      var openai = providers.find(function(p) { return p.id === 'openai'; });
+      if (!ep) {
+        showToast('Cleared — OpenAI provider will use api.openai.com', 'success');
+      } else if (openai) {
+        showToast('Local endpoint saved & reconnected (tier: ' + esc(openai.tier) + ')', 'success');
+      } else {
+        showToast('Saved, but "' + ep + '" did not respond — check the URL and that the server is running.', 'error');
+      }
+      loadOpenaiEndpointConfig();
+      loadAiModels();
+      loadStatus();
+    }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+  });
+}
+
+// ── Claude Code CLI (subscription) ──
+function loadClaudeCliConfig() {
+  api('GET', '/api/config').then(function(data) {
+    var cli = (data.ai && data.ai['claude-cli']) || {};
+    var enabled = document.getElementById('claudeCliEnabled');
+    var binPath = document.getElementById('claudeCliBinPath');
+    if (enabled) enabled.checked = Boolean(cli.enabled);
+    if (binPath) binPath.value = cli.binPath || '';
+  });
+}
+
+var btnSaveClaudeCli = document.getElementById('btnSaveClaudeCli');
+if (btnSaveClaudeCli) {
+  btnSaveClaudeCli.addEventListener('click', function() {
+    var enabled = document.getElementById('claudeCliEnabled').checked;
+    var binPath = document.getElementById('claudeCliBinPath').value.trim();
+    // Save binPath first so it's already persisted by the time `enabled`
+    // flips to true and the router resolves+caches the binary for the
+    // first time (see resolveClaudeCliBin in router.ts).
+    api('POST', '/api/config/update', { path: 'ai.claude-cli.binPath', value: binPath }).then(function() {
+      return api('POST', '/api/config/update', { path: 'ai.claude-cli.enabled', value: enabled });
+    }).then(function() {
+      return api('POST', '/api/providers/refresh');
+    }).then(function(refreshData) {
+      var providers = (refreshData && refreshData.providers) || [];
+      var connected = providers.some(function(p) { return p.id === 'claude-cli'; });
+      if (!enabled) {
+        showToast('Claude Code CLI disabled', 'success');
+      } else if (connected) {
+        showToast('Claude Code CLI connected', 'success');
+      } else {
+        showToast('Saved, but Claude Code CLI is not available — run "claude login" and check the binary path.', 'error');
+      }
+      loadClaudeCliConfig();
+      loadAiModels();
       loadStatus();
     }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
   });
@@ -4366,7 +4708,10 @@ document.addEventListener('click', function(e) {
 
 // ── Global Provider Preference ──
 function loadGlobalProvider() {
-  api('GET', '/api/config').then(function(data) {
+  api('GET', '/api/models').then(function(modelsData) {
+    populateGlobalProviderOptions((modelsData && modelsData.providers) || []);
+    return api('GET', '/api/config');
+  }).then(function(data) {
     var sel = document.getElementById('globalProviderSelect');
     if (sel && data.ai) sel.value = data.ai.preferredProvider || '';
   });
@@ -6561,5 +6906,13 @@ startPolling();
 
 })();
 </script>
+
+<!-- ═══════════════════════════════════════════════
+     M2.1: Preact-mounted panels (dashboard/src, built via
+     `npm run build:ui` -> review.js). No shared state with
+     the legacy script above — see dashboard/src/bridge.ts.
+     ═══════════════════════════════════════════════ -->
+<div id="review-panel-root"></div>
+<script src="review.js"></script>
 </body>
 </html>

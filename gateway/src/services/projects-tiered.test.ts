@@ -123,7 +123,7 @@ function novelProject(id: string): Project {
 
 describe('buildProjectContext CORE injection (Chunk B1)', () => {
   it('injects the "# CORE STORY MEMORY" header when a MemoryTier + cache exist', async () => {
-    const engineEng = new ProjectEngine(undefined, rootDir);
+    const engineEng = new ProjectEngine(undefined, workspaceDir);
     engineEng.setContextEngine(engine);
     engineEng.setMemoryTier(new MemoryTierService(engine, null, workspaceDir));
 
@@ -138,7 +138,7 @@ describe('buildProjectContext CORE injection (Chunk B1)', () => {
   });
 
   it('produces NO CORE header (prior behavior) when no MemoryTier is wired', async () => {
-    const engineEng = new ProjectEngine(undefined, rootDir);
+    const engineEng = new ProjectEngine(undefined, workspaceDir);
     engineEng.setContextEngine(engine);
     // Intentionally NOT calling setMemoryTier.
 
@@ -157,7 +157,7 @@ describe('buildProjectContext CORE injection (Chunk B1)', () => {
 
 describe('revision context truncate→summary swap (Chunk B1)', () => {
   it('uses the ChapterSummary (with ending) instead of the opening slice', async () => {
-    const engineEng = new ProjectEngine(undefined, rootDir);
+    const engineEng = new ProjectEngine(undefined, workspaceDir);
     engineEng.setContextEngine(engine);
     // MemoryTier not required for this path, but wire it to mirror production.
     engineEng.setMemoryTier(new MemoryTierService(engine, null, workspaceDir));
@@ -177,7 +177,7 @@ describe('revision context truncate→summary swap (Chunk B1)', () => {
   });
 
   it('falls back to the opening slice when no summary is cached', async () => {
-    const engineEng = new ProjectEngine(undefined, rootDir);
+    const engineEng = new ProjectEngine(undefined, workspaceDir);
     engineEng.setContextEngine(engine);
 
     const project = novelProject('project-rev-nosummary');
@@ -197,7 +197,7 @@ describe('revision context truncate→summary swap (Chunk B1)', () => {
 
 describe('uploadedContent de-dup (Chunk B1)', () => {
   it('does not inline the manuscript body in the system context when it is also in the user message', async () => {
-    const engineEng = new ProjectEngine(undefined, rootDir);
+    const engineEng = new ProjectEngine(undefined, workspaceDir);
     engineEng.setContextEngine(engine);
 
     const project: Project = {
@@ -231,6 +231,7 @@ describe('StepExecutor full-manuscript allowlist (Chunk B1)', () => {
     getProject: () => undefined,
     completeStep: () => null,
     completeStepBare: () => {},
+    openStepGate: () => {},
     activateStep: () => null,
     failStep: () => {},
     buildProjectContext: async () => '',

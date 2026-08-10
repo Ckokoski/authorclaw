@@ -37,10 +37,12 @@ import {
   buildNovelPipelineSteps,
   buildBookProductionSteps,
   deriveDependencies,
+  applyStepCompletion,
   type Project,
   type ProjectStep,
   type ProjectType,
   type NovelPipelineConfig,
+  type PhaseName,
 } from './project-templates.js';
 import {
   StepExecutor,
@@ -49,6 +51,7 @@ import {
   type StepServices,
   type ExecuteStepOptions,
 } from './step-executor.js';
+import { markDependentsDirty } from './dependency-graph.js';
 
 const log = logger.child('[projects]');
 
@@ -101,7 +104,14 @@ export type AISelectProviderFunc = (taskType: string) => { id: string };
 export class ProjectEngine {
   private projects: Map<string, Project> = new Map();
   private authorOS: AuthorOSService | null;
-  private rootDir: string;
+  /**
+   * Resolved per-book workspace root (honors AUTHORCLAW_WORKSPACE_DIR / the
+   * active-book pointer — see workspace-routing.ts). NOT the install
+   * checkout root — callers used to pass ROOT_DIR here and this class
+   * appended 'workspace' itself, which meant project/step state always lived
+   * under the install dir regardless of which book was active (ALP-1614).
+   */
+  private workspaceDir: string;
   private nextId = 1;
   private aiComplete: AICompleteFunc | null = null;
   private aiSelectProvider: AISelectProviderFunc | null = null;
@@ -129,15 +139,16 @@ export class ProjectEngine {
    */
   private stepExecutor: StepExecutor;
 
-  constructor(authorOS?: AuthorOSService, rootDir?: string) {
+  constructor(authorOS?: AuthorOSService, workspaceDir?: string) {
     this.authorOS = authorOS || null;
-    this.rootDir = rootDir || process.cwd();
-    this.stateFilePath = join(this.rootDir, 'workspace', '.config', 'projects-state.json');
+    this.workspaceDir = workspaceDir || join(process.cwd(), 'workspace');
+    this.stateFilePath = join(this.workspaceDir, '.config', 'projects-state.json');
 
     const enginePort: EnginePort = {
       getProject: (id) => this.getProject(id),
       completeStep: (projectId, stepId, result) => this.completeStep(projectId, stepId, result),
       completeStepBare: (projectId, stepId, result) => this.completeStepBare(projectId, stepId, result),
+      openStepGate: (projectId, stepId, result) => this.openStepGate(projectId, stepId, result),
       activateStep: (projectId, stepId) => this.activateStep(projectId, stepId),
       failStep: (projectId, stepId, error) => this.failStep(projectId, stepId, error),
       buildProjectContext: (project, step) => this.buildProjectContext(project, step),
@@ -684,6 +695,31 @@ Description: ${description}`;
   }
 
   /**
+   * Open a step's review gate instead of completing it (M1.3 — ALP-1557).
+   * Called by the executor in place of completeStep/completeStepBare when
+   * resolveStepGate() (project-templates.ts) says the step gates on
+   * completion. Delegates the state transition to applyStepCompletion — the
+   * same pure function the gate state machine's own tests cover — so this
+   * is just persistence + timestamp bookkeeping around it.
+   *
+   * Deliberately does NOT recompute "remaining steps" / project-completion —
+   * an awaiting_review step is neither pending/active nor completed/skipped,
+   * so it simply falls out of both checks: dependents stay blocked (conductor
+   * ready-set) and the project is never mis-marked complete around it.
+   */
+  openStepGate(projectId: string, stepId: string, result: string): void {
+    const project = this.projects.get(projectId);
+    if (!project) return;
+    const step = project.steps.find(s => s.id === stepId);
+    if (!step) return;
+
+    applyStepCompletion(step, project, result);
+
+    project.updatedAt = new Date().toISOString();
+    this.persistState();
+  }
+
+  /**
    * Conductor helper: mark a specific pending step 'active' and enrich its
    * prompt with prior results (mirrors the activation the sequential completeStep
    * does for the "next" step). Called by the conductor at dispatch time.
@@ -884,6 +920,7 @@ Description: ${description}`;
   async executeStepWithRetry(projectId: string):
     Promise<
       | { ok: true; completedStep: string; response: string; nextStep: ProjectStep | null; project: Project }
+      | { ok: true; gated: true; step: string; project: Project }
       | { ok: false; kind: 'no-project' }
       | { ok: false; kind: 'no-active-step' }
       | { ok: false; kind: 'provider-failure'; detail: string; project: Project }
@@ -891,6 +928,128 @@ Description: ${description}`;
       | { ok: false; kind: 'error'; error: string; project: Project }
     > {
     return this.stepExecutor.executeStepWithRetry(projectId);
+  }
+
+  /**
+   * Rerun an awaiting_review step with reviewer feedback (M1.5 — ALP-1559,
+   * POST .../revise). Thin delegate — see StepExecutor.reviseStep for the
+   * version-append + gate-reopen behavior.
+   */
+  async reviseStep(projectId: string, stepId: string, feedback: string, workspaceDir: string) {
+    return this.stepExecutor.reviseStep(projectId, stepId, feedback, workspaceDir);
+  }
+
+  /**
+   * Decide a step's open review gate (M1.5 — ALP-1559, POST .../approve).
+   * 'approved' completes the step exactly as completeStepBare would have if
+   * it hadn't gated — unblocking dependents on the conductor's next tick —
+   * and, if this approval bumps the step past the version it was previously
+   * approved at, marks every downstream completed step dirty (M1.4 —
+   * dependency-graph.ts) so reviewers know what needs a second look.
+   * Returns null if the project/step doesn't exist or the step isn't
+   * currently awaiting review.
+   */
+  decideStepGate(
+    projectId: string,
+    stepId: string,
+    decision: 'approved' | 'rejected',
+    currentVersion?: number,
+  ): ProjectStep | null {
+    const project = this.projects.get(projectId);
+    if (!project) return null;
+    const step = project.steps.find(s => s.id === stepId);
+    if (!step || step.status !== 'awaiting_review' || !step.gate) return null;
+
+    const previousDecidedVersion = step.gate.decidedVersion;
+    const now = new Date().toISOString();
+    step.gate = {
+      ...step.gate,
+      state: decision,
+      decidedAt: now,
+      ...(decision === 'approved' ? { decidedVersion: currentVersion } : {}),
+    };
+
+    if (decision === 'approved') {
+      this.completeStepBare(projectId, stepId, step.result || '');
+      if (
+        typeof previousDecidedVersion === 'number' &&
+        typeof currentVersion === 'number' &&
+        currentVersion > previousDecidedVersion
+      ) {
+        const marked = markDependentsDirty(project.steps, stepId, previousDecidedVersion, currentVersion, now);
+        if (marked.length > 0) this.persistState();
+      }
+    } else {
+      project.updatedAt = now;
+      this.persistState();
+    }
+    return step;
+  }
+
+  /**
+   * Record a manually-saved version's content on the step itself (M1.5 —
+   * ALP-1559, POST .../versions). The caller has already appended the
+   * immutable version + rewritten the canonical file on disk — this just
+   * keeps in-memory step.result (what buildProjectContext/downstream steps
+   * read) in sync and persists project state.
+   */
+  saveStepResult(projectId: string, stepId: string, content: string): ProjectStep | null {
+    const project = this.projects.get(projectId);
+    if (!project) return null;
+    const step = project.steps.find(s => s.id === stepId);
+    if (!step) return null;
+    step.result = content;
+    project.updatedAt = new Date().toISOString();
+    this.persistState();
+    return step;
+  }
+
+  /**
+   * Clear a step's dirty marker (M1.5 — ALP-1559, POST .../clean). Orthogonal
+   * to status/gate — this only acknowledges the downstream-impact flag from
+   * dependency-graph.ts, it doesn't re-run or re-approve anything.
+   */
+  markStepClean(projectId: string, stepId: string): ProjectStep | null {
+    const project = this.projects.get(projectId);
+    if (!project) return null;
+    const step = project.steps.find(s => s.id === stepId);
+    if (!step) return null;
+    delete step.dirty;
+    project.updatedAt = new Date().toISOString();
+    this.persistState();
+    return step;
+  }
+
+  /**
+   * Update review-gate configuration for a project (M1.5 — ALP-1559, PATCH
+   * /api/projects/:id/gates): per-phase overrides on project.context.reviewGates
+   * and/or per-step gateEnabled overrides. Both are merged shallowly into the
+   * existing config — omitted keys are left untouched.
+   */
+  updateReviewGates(
+    projectId: string,
+    updates: { reviewGates?: Partial<Record<PhaseName, boolean>>; stepGateOverrides?: Record<string, boolean | null> },
+  ): Project | null {
+    const project = this.projects.get(projectId);
+    if (!project) return null;
+
+    if (updates.reviewGates) {
+      project.context = project.context || {};
+      project.context.reviewGates = { ...(project.context.reviewGates || {}), ...updates.reviewGates };
+    }
+
+    if (updates.stepGateOverrides) {
+      for (const [stepId, gateEnabled] of Object.entries(updates.stepGateOverrides)) {
+        const step = project.steps.find(s => s.id === stepId);
+        if (!step) continue;
+        if (gateEnabled === null) delete step.gateEnabled;
+        else step.gateEnabled = gateEnabled;
+      }
+    }
+
+    project.updatedAt = new Date().toISOString();
+    this.persistState();
+    return project;
   }
 
   /**
@@ -1572,7 +1731,7 @@ Description: ${description}`;
       return this.coreLessonsCache;
     }
 
-    const coreLessonsPath = join(this.rootDir, 'workspace', '.agent', 'core-lessons.md');
+    const coreLessonsPath = join(this.workspaceDir, '.agent', 'core-lessons.md');
     if (!existsSync(coreLessonsPath)) {
       this.coreLessonsCache = null;
       this.coreLessonsCacheTime = now;

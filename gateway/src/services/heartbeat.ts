@@ -34,9 +34,16 @@ interface HeartbeatConfig {
  * Callback type for autonomous project execution.
  * Injected by the gateway so heartbeat can trigger project steps
  * without importing the project engine or AI router directly.
+ *
+ * The `gated` outcome (M1.3 — ALP-1557) is neither success nor failure: the
+ * step produced content but opened a review gate instead of completing.
+ * Distinct from `error` so autonomousWake() never counts it as a failure or
+ * retries against it — it's a "stop and wait for a human" signal, not a bug.
  */
 export type AutonomousRunFunc = (projectId: string) => Promise<
-  { completed: string; response: string; wordCount: number; nextStep?: string } | { error: string }
+  | { completed: string; response: string; wordCount: number; nextStep?: string }
+  | { error: string }
+  | { gated: true; step: string }
 >;
 
 export type AutonomousProjectListFunc = () => Array<{
@@ -515,6 +522,21 @@ export class HeartbeatService {
         }
 
         const result = await this.autonomousRunStep(targetProject.id);
+
+        // A gate (M1.3 — ALP-1557) is not a failure — the step produced
+        // content and is waiting on human review. Stop working this project
+        // for the rest of this wake cycle WITHOUT touching stepsThisWake /
+        // totalAutonomousSteps and WITHOUT the ❌ failure broadcast: a gated
+        // step must never count toward failure or retry budgets.
+        if ('gated' in result) {
+          this.logAutonomous(
+            `"${result.step}" opened a review gate — pausing autonomous work on "${targetProject.title}" until it's reviewed`,
+            'idle',
+            { projectId: targetProject.id, step: result.step }
+          );
+          this.broadcast(`🔒 "${result.step}" is ready for your review — autonomous mode is pausing on "${targetProject.title}" until you decide.`);
+          break;
+        }
 
         if ('error' in result) {
           this.logAutonomous(`Step failed: ${result.error}`, 'difficulty', { projectId: targetProject.id });
