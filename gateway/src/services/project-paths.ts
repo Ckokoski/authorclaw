@@ -37,6 +37,18 @@ export function stepOutputFileName(step: { id: string; label: string }): string 
   return `${step.id}-${slugify(step.label)}.md`;
 }
 
+/**
+ * Step filename as written BEFORE this module existed: the same regex, but
+ * without slugify's leading/trailing dash trim and 'untitled' fallback.
+ * Differs only for labels that start or end in a non-alphanumeric character —
+ * "Draft Chapter 1!" was written `<id>-draft-chapter-1-.md`, which
+ * stepOutputFileName now spells `<id>-draft-chapter-1.md`. Kept purely so
+ * reads and in-place rewrites can still find those older files.
+ */
+export function legacyStepOutputFileName(step: { id: string; label: string }): string {
+  return `${step.id}-${String(step.label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+}
+
 /** Legacy FLAT dir (pre-ALP-1548) for backward-compatible reads: `projects/<title-slug>`. */
 export function legacyProjectOutputDir(
   workspaceDir: string,
@@ -45,9 +57,13 @@ export function legacyProjectOutputDir(
   return join(workspaceDir, 'projects', slugify(project.title));
 }
 
-/** True if `dir` holds this step's canonical .md or its `.versions/<id>/` sidecar. */
+/** True if `dir` holds this step's canonical .md (either spelling) or its `.versions/<id>/` sidecar. */
 function hasStepArtifacts(dir: string, step: { id: string; label: string }): boolean {
-  return existsSync(join(dir, '.versions', step.id)) || existsSync(join(dir, stepOutputFileName(step)));
+  return (
+    existsSync(join(dir, '.versions', step.id)) ||
+    existsSync(join(dir, stepOutputFileName(step))) ||
+    existsSync(join(dir, legacyStepOutputFileName(step)))
+  );
 }
 
 /**
@@ -73,4 +89,32 @@ export function resolveStepArtifactDir(
   const legacyDir = legacyProjectOutputDir(workspaceDir, project);
   if (hasStepArtifacts(legacyDir, step)) return legacyDir;
   return phaseDir;
+}
+
+/**
+ * Path to a step's canonical .md — the first spelling that exists, preferring
+ * the current dir and the current filename. Both axes vary independently for
+ * pre-ALP-1548 files: the folder (per-phase vs flat) AND the trailing-dash
+ * filename difference legacyStepOutputFileName documents.
+ *
+ * When the step has no file anywhere this returns the current canonical path,
+ * which makes it the right path to WRITE to as well: a rewrite lands on the
+ * existing file instead of dropping a second, differently-spelled copy beside
+ * it for assembly to pick between.
+ */
+export function resolveStepOutputPath(
+  workspaceDir: string,
+  project: { title: string; type?: string; pipelinePhase?: number },
+  step: { id: string; label: string },
+): string {
+  const names = [stepOutputFileName(step), legacyStepOutputFileName(step)];
+  const dirs = [projectOutputDir(workspaceDir, project), legacyProjectOutputDir(workspaceDir, project)];
+  const candidates: string[] = [];
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (!candidates.includes(candidate)) candidates.push(candidate);
+    }
+  }
+  return candidates.find((c) => existsSync(c)) ?? candidates[0];
 }

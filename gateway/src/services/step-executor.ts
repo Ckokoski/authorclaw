@@ -21,7 +21,7 @@ import type { ContextEngine } from './context-engine.js';
 import { generateDocxBuffer } from './docx-export.js';
 import { logger } from './logger.js';
 import { docVersionService } from './doc-versions.js';
-import { projectOutputDir, stepOutputFileName, legacyProjectOutputDir, resolveStepArtifactDir } from './project-paths.js';
+import { projectOutputDir, stepOutputFileName, resolveStepArtifactDir, resolveStepOutputPath } from './project-paths.js';
 import { listComments, formatOpenCommentsForAgent } from './comments.js';
 import { resolveStepGate } from './project-templates.js';
 import type {
@@ -414,10 +414,9 @@ export class StepExecutor {
 
       const { mkdir, writeFile } = await import('fs/promises');
       await mkdir(projectDir, { recursive: true });
-      const stepFileName = stepOutputFileName(step);
       const stepContent = `# ${step.label}\n\n${response}`;
       const version = await docVersionService.appendVersion(projectDir, step.id, stepContent, 'agent-patch', 'Revised from reviewer feedback');
-      await writeFile(join(projectDir, stepFileName), stepContent, 'utf-8');
+      await writeFile(resolveStepOutputPath(workspaceDir, project, step), stepContent, 'utf-8');
 
       // openStepGate re-runs applyStepCompletion — since the step's phase is
       // still gated, this puts it right back into awaiting_review with a fresh
@@ -990,9 +989,7 @@ export class StepExecutor {
 
           const chapterContents: string[] = [];
           for (const ws of writingSteps) {
-            const fileName = stepOutputFileName(ws);
-            const newPath = join(projectDir, fileName);
-            const fullPath = exLocal(newPath) ? newPath : join(legacyProjectOutputDir(workspaceDir, currentProject), fileName);
+            const fullPath = resolveStepOutputPath(workspaceDir, currentProject, ws);
             if (exLocal(fullPath)) {
               const raw = await readF(fullPath, 'utf-8');
               const content = raw.replace(/^# .+\n\n/, '');

@@ -10,7 +10,6 @@
  * curl-exercisable end to end).
  */
 import { Request, Response } from 'express';
-import { join } from 'path';
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import type { ApiContext } from '../context.js';
@@ -18,7 +17,7 @@ import { docVersionService } from '../../services/doc-versions.js';
 import { computeTransitiveDependents } from '../../services/dependency-graph.js';
 import { addComment, listComments, setCommentStatus, CommentValidationError } from '../../services/comments.js';
 import type { Project, ProjectStep } from '../../services/project-templates.js';
-import { resolveStepArtifactDir, stepOutputFileName } from '../../services/project-paths.js';
+import { resolveStepArtifactDir, resolveStepOutputPath } from '../../services/project-paths.js';
 
 /**
  * Where a step's artifacts actually live (ALP-1548: per-phase subfolder, with
@@ -29,8 +28,6 @@ import { resolveStepArtifactDir, stepOutputFileName } from '../../services/proje
 function projectDirFor(workspaceDir: string, project: Project, step: ProjectStep): string {
   return resolveStepArtifactDir(workspaceDir, project, step);
 }
-
-const stepFileNameFor = stepOutputFileName;
 
 function findStep(project: Project, stepId: unknown): ProjectStep | undefined {
   return project.steps.find((s) => s.id === stepId);
@@ -130,7 +127,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     if (!step) return res.status(404).json({ error: 'Step not found' });
 
     const projectDir = projectDirFor(workspaceDir, project, step);
-    const canonicalPath = join(projectDir, stepFileNameFor(step));
+    const canonicalPath = resolveStepOutputPath(workspaceDir, project, step);
     const versions = await docVersionService.getVersions(projectDir, step.id, canonicalPath);
     res.json({ stepId: step.id, versions });
   });
@@ -198,7 +195,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     const projectDir = projectDirFor(workspaceDir, project, step);
     await mkdir(projectDir, { recursive: true });
     const version = await docVersionService.appendVersion(projectDir, step.id, content, 'user', note);
-    await writeFile(join(projectDir, stepFileNameFor(step)), content, 'utf-8');
+    await writeFile(resolveStepOutputPath(workspaceDir, project, step), content, 'utf-8');
 
     const updated = engine.saveStepResult(project.id, step.id, content);
     res.json({ stepId: step.id, version, step: updated });
@@ -241,7 +238,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     }
 
     const projectDir = projectDirFor(workspaceDir, project, step);
-    const canonicalPath = join(projectDir, stepFileNameFor(step));
+    const canonicalPath = resolveStepOutputPath(workspaceDir, project, step);
     if (!existsSync(canonicalPath)) {
       return res.status(400).json({ error: 'Step has no content yet to anchor a comment to' });
     }

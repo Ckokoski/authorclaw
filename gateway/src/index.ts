@@ -16,7 +16,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolveInstallRootDir, loadInstallDotenv } from './services/install-root.js';
 import { resolveWorkspaceRoot, resolveActiveWorkspace } from './services/workspace-routing.js';
-import { projectOutputDir, stepOutputFileName, legacyProjectOutputDir } from './services/project-paths.js';
+import { projectOutputDir, stepOutputFileName, resolveStepOutputPath } from './services/project-paths.js';
 
 import { ConfigService } from './services/config.js';
 import { MemoryService } from './services/memory.js';
@@ -2339,9 +2339,7 @@ class AuthorAgentGateway {
 
             const chapterContents: string[] = [];
             for (const ws of writingSteps) {
-              const fileName = stepOutputFileName(ws);
-              const newPath = join(projectDir, fileName);
-              const fullPath = existsSync(newPath) ? newPath : join(legacyProjectOutputDir(workspaceDir, project), fileName);
+              const fullPath = resolveStepOutputPath(workspaceDir, project, ws);
               try {
                 const raw = await fs.readFile(fullPath, 'utf-8');
                 // Strip the "# Step Label" header that was prepended during save
