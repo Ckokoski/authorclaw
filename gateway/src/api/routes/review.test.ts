@@ -45,7 +45,9 @@ describe('review queue route', () => {
     } as any);
 
     await new Promise<void>((resolve) => {
-      server = app.listen(0, resolve);
+      // Wrapped rather than passed directly: listen()'s callback is typed
+      // (error?: Error) => void, which doesn't accept a Promise resolver.
+      server = app.listen(0, () => resolve());
     });
     const { port } = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${port}`;
