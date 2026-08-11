@@ -91,8 +91,10 @@ export function registerReviewRoutes(ctx: ApiContext): void {
   // ═══════════════════════════════════════════════════════════
 
   // GET /api/reviews — every step (across every project/"book") currently
-  // awaiting a human decision. Registered before /api/projects/:id/... below
-  // is irrelevant — this is its own top-level path, no collision risk.
+  // awaiting a human decision or made stale by an upstream change. `dirty` is
+  // orthogonal to status, so completed dirty steps must be selected explicitly.
+  // Registered before /api/projects/:id/... below is irrelevant — this is its
+  // own top-level path, no collision risk.
   app.get('/api/reviews', (req: Request, res: Response) => {
     const engine = getEngine(res);
     if (!engine) return;
@@ -100,7 +102,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     const projects: Project[] = engine.listProjects();
     const queue = projects.flatMap((project) =>
       project.steps
-        .filter((step) => step.status === 'awaiting_review')
+        .filter((step) => step.status === 'awaiting_review' || Boolean(step.dirty))
         .map((step) => ({
           projectId: project.id,
           projectTitle: project.title,
