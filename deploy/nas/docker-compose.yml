@@ -25,7 +25,14 @@ services:
   authoragent:
     image: ${AUTHORAGENT_REGISTRY:-localhost:5555}/authoragent:${AUTHORAGENT_TAG:-latest}
     container_name: authoragent
-    restart: unless-stopped
+    # `always`, not `unless-stopped`: this is an unattended service nobody is
+    # watching. `unless-stopped` treats a manual `docker stop` as permanent, so
+    # a stray stop survives every later daemon restart and reboot — AuthorAgent
+    # sat down for two days that way (2026-08-08 → 08-10) while every other NAS
+    # stack came back on its own. `always` makes a stop last until the next
+    # daemon restart instead of forever. To take it down deliberately, use
+    # `docker compose stop`/`down` and expect it back after a NAS reboot.
+    restart: always
     # Deliberately no `ports:` — reachable only via authoragent-proxy. See above.
     expose:
       - "3847"
@@ -60,7 +67,10 @@ services:
   authoragent-proxy:
     image: nginx:1.27-alpine
     container_name: authoragent-proxy
-    restart: unless-stopped
+    # `always` for the same reason as the gateway above — and doubly so here,
+    # since this is the only published port: if the proxy stays down the whole
+    # service is unreachable even when the gateway is running.
+    restart: always
     depends_on:
       - authoragent
     ports:
