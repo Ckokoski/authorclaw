@@ -1056,6 +1056,14 @@ export class AIRouter {
   /** Writes the system prompt to a unique scratch file for --system-prompt-file.
    *  Mode 0o600, never logged (only its length is — see runClaudeCliOnce). */
   private async writeSystemPromptFile(content: string): Promise<string> {
+    // Re-create the scratch dirs if they've gone missing. initialize() makes
+    // them once at startup, but they deliberately live under tmpdir() (see
+    // CLAUDE_CLI_SCRATCH_DIR) — which is exactly what OS temp cleaners sweep.
+    // A gateway that outlives a sweep would otherwise fail EVERY subsequent
+    // claude-cli call with ENOENT until restart: first here, and then on the
+    // child's missing cwd. Creating CLAUDE_CLI_CWD_DIR covers both, and
+    // mkdir(recursive) on an existing dir is a no-op syscall.
+    await mkdir(CLAUDE_CLI_CWD_DIR, { recursive: true });
     const path = join(CLAUDE_CLI_SCRATCH_DIR, `${process.pid}-${Date.now()}-${randomUUID()}.txt`);
     await writeFile(path, content, { encoding: 'utf8', mode: 0o600 });
     return path;

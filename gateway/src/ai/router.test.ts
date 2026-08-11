@@ -903,6 +903,37 @@ describe('runClaudeCliOnce (streaming behavior, fake spawn)', () => {
     await expect(access(filePath)).rejects.toThrow(); // cleaned up
   });
 
+  // initialize() creates the scratch dir at startup, but it lives under
+  // tmpdir() precisely so the OS can sweep it — and a long-running gateway can
+  // outlive that sweep. Before writeSystemPromptFile re-created it, every
+  // claude-cli call after a sweep failed with ENOENT until restart. This test
+  // is also why the whole describe block passes on a dev box and fails on a
+  // clean one: it never called initialize(), so it only ever worked when some
+  // earlier run had left the dir behind.
+  it('re-creates the scratch dir when a temp cleaner has swept it', async () => {
+    const scratchDir = join(tmpdir(), 'authoragent-claude-cli');
+    await rm(scratchDir, { recursive: true, force: true });
+
+    const child = makeFakeChild();
+    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => child);
+    const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
+
+    const promise = (router as any).runClaudeCliOnce(
+      FAKE_PROVIDER,
+      { provider: 'claude-cli', system: 'sys', messages: [{ role: 'user', content: 'hi' }] },
+      Date.now()
+    );
+    await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalled());
+
+    // The child's cwd must exist too — spawn would fail ENOENT on it otherwise.
+    const { access } = await import('node:fs/promises');
+    await expect(access(join(scratchDir, 'cwd'))).resolves.toBeUndefined();
+    expect(fakeSpawn.mock.calls[0][2].cwd).toBe(join(scratchDir, 'cwd'));
+
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'ok' }) + '\n'));
+    await expect(promise).resolves.toMatchObject({ text: 'ok' });
+  });
+
   it('two concurrent calls get distinct temp files, both cleaned up', async () => {
     // writeSystemPromptFile does a real fs write before spawning, so which of
     // the two calls reaches spawnFn first is a genuine (and irrelevant) race —
