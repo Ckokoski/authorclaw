@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 import { Vault } from '../security/vault.js';
 import { CostTracker } from '../services/costs.js';
 import { logger } from '../services/logger.js';
-import { getLLMPrice } from '../services/pricing.js';
+import { getLLMPrice, PRICING_LAST_VERIFIED } from '../services/pricing.js';
 import { ModelConfig } from './model-config.js';
 
 const execFileAsync = promisify(execFile);
@@ -29,7 +29,11 @@ interface AIProvider {
   id: string;
   name: string;
   model: string;
-  tier: 'free' | 'cheap' | 'paid';
+  // 'local' = an endpoint-configured local server (LM Studio/vLLM/llama.cpp)
+  // reached through the openai slot — zero cost, exempt from the budget gate.
+  // Distinct from 'free' (a provider that's free by nature, e.g. Ollama)
+  // purely so provider listings can still label it accurately.
+  tier: 'free' | 'cheap' | 'paid' | 'local';
   available: boolean;
   endpoint: string;
   maxTokens: number;
@@ -794,11 +798,22 @@ export class AIRouter {
       });
     }
 
-    // ── OpenAI GPT (PAID) ──
+    // ── OpenAI GPT (PAID, or 'local' when pointed at a custom endpoint) ──
+    // A custom endpoint is a self-hosted server (LM Studio, vLLM, llama.cpp)
+    // that needs no API key by design — gate registration on "has a key OR
+    // has a local endpoint", not on the key alone, or local-only users never
+    // get this provider registered at all (no $0 pricing, no routing candidate).
     const openaiKey = await this.vault.get('openai_api_key');
-    if (openaiKey) {
+    const isLocalEndpoint = Boolean(this.config.openai?.endpoint);
+    if (openaiKey || isLocalEndpoint) {
       const model = this.resolveModel('openai', PROVIDER_DEFAULTS.openai.defaultModel);
-      const price = this.priceFor('openai', model);
+      // A custom endpoint (LM Studio, vLLM, llama.cpp server) is a
+      // self-hosted, zero-cost server — bill it at $0 regardless of whether
+      // its model slug happens to collide with a known-priced OpenAI model,
+      // rather than falling back to openai's paid default pricing.
+      const price = isLocalEndpoint
+        ? { costPer1kInput: 0, costPer1kOutput: 0 }
+        : this.priceFor('openai', model);
       const endpoint = this.config.openai?.endpoint || 'https://api.openai.com/v1';
       // Custom/local endpoints (LM Studio, vLLM, llama.cpp server, etc.) can
       // be offline without any config change — e.g. LM Studio simply not
@@ -809,7 +824,7 @@ export class AIRouter {
       // api.openai.com endpoint — that's Anthropic-grade infra, not worth
       // an extra startup round-trip to probe.
       let reachable = true;
-      if (this.config.openai?.endpoint) {
+      if (isLocalEndpoint) {
         reachable = await this.checkOpenAICompatible(endpoint);
         if (!reachable) {
           log.warn(`openai endpoint ${endpoint} not reachable at startup — marking unavailable until next reinitialize`);
@@ -817,9 +832,9 @@ export class AIRouter {
       }
       this.providers.set('openai', {
         id: 'openai',
-        name: 'OpenAI GPT',
+        name: isLocalEndpoint ? 'OpenAI-compatible (local)' : 'OpenAI GPT',
         model,
-        tier: 'paid',
+        tier: isLocalEndpoint ? 'local' : 'paid',
         available: reachable,
         // Configurable so this provider slot can also point at any
         // OpenAI-compatible local server (LM Studio, vLLM, llama.cpp server,
@@ -922,14 +937,15 @@ export class AIRouter {
    * (install / update / login) rather than transient network blips.
    */
   private async checkClaudeCLI(): Promise<{ available: boolean; version?: string; reason?: string }> {
+    const { bin } = await this.resolveClaudeCliBin();
     let version: string;
     try {
-      const { stdout } = await execFileAsync('claude', ['--version'], { timeout: 10_000 });
+      const { stdout } = await execFileAsync(bin, ['--version'], { timeout: 10_000 });
       version = stdout.trim();
       this.claudeCliVersion = version;
     } catch (err: any) {
       if (err?.code === 'ENOENT') {
-        return { available: false, reason: 'Claude Code CLI not found on PATH. Install it first.' };
+        return { available: false, reason: `Claude Code CLI not found at "${bin}". Install it first, or set config.ai['claude-cli'].binPath.` };
       }
       return { available: false, reason: `Claude Code CLI check failed: ${err?.message || err}` };
     }
@@ -944,7 +960,7 @@ export class AIRouter {
     }
 
     try {
-      const { stdout } = await execFileAsync('claude', ['auth', 'status'], { timeout: 10_000 });
+      const { stdout } = await execFileAsync(bin, ['auth', 'status'], { timeout: 10_000 });
       const status = JSON.parse(stdout);
       if (!status?.loggedIn) {
         return { available: false, version, reason: 'Claude Code CLI is installed but not logged in. Run "claude login".' };
@@ -1225,7 +1241,7 @@ export class AIRouter {
     currentModel: string;
     defaultModel: string;
     override: string | null;
-    tier: 'free' | 'cheap' | 'paid';
+    tier: 'free' | 'cheap' | 'paid' | 'local';
     knownModels: string[];
     price: { costPer1kInput: number; costPer1kOutput: number; confidence: string; lastVerified: string };
   }> {
@@ -1234,17 +1250,32 @@ export class AIRouter {
       // Resolve the current model even when the provider isn't active (no key),
       // so the UI can still show what it WOULD use.
       const currentModel = active?.model ?? this.resolveModel(id, def.defaultModel);
-      const priceRow = getLLMPrice(currentModel, {
-        costPer1kInput: def.costPer1kInput,
-        costPer1kOutput: def.costPer1kOutput,
-      });
+      // Reflect the actually-registered tier when the provider is active
+      // (e.g. 'local' for an openai-slot server pointed at a custom
+      // endpoint) — def.tier is only the generic per-id default.
+      const tier = active?.tier ?? def.tier;
+      // A 'local' provider's unknown-model fallback must be $0, not openai's
+      // paid default — otherwise this settings list would show phantom
+      // pricing for a free self-hosted server even though the actual routing
+      // path (priceFor() in initialize()) already bills it at $0.
+      const priceFallback = tier === 'local'
+        ? { costPer1kInput: 0, costPer1kOutput: 0 }
+        : { costPer1kInput: def.costPer1kInput, costPer1kOutput: def.costPer1kOutput };
+      // A 'local' provider is always $0, full stop — bypass getLLMPrice()
+      // entirely rather than relying on its fallback path, since a
+      // self-hosted model's slug can still collide with a known-priced
+      // model name in LLM_PRICING (e.g. the default "gpt-4o" resolved
+      // model before a user sets a custom local model override).
+      const priceRow = tier === 'local'
+        ? { costPer1kInput: 0, costPer1kOutput: 0, confidence: 'listed' as const, lastVerified: PRICING_LAST_VERIFIED, note: 'Self-hosted local endpoint — $0 by definition' }
+        : getLLMPrice(currentModel, priceFallback);
       return {
         id,
         available: !!active?.available,
         currentModel,
         defaultModel: def.defaultModel,
         override: this.modelConfig?.get(id) ?? null,
-        tier: def.tier,
+        tier,
         knownModels: KNOWN_MODELS[id] ?? [],
         price: {
           costPer1kInput: priceRow.costPer1kInput,
@@ -1280,6 +1311,53 @@ export class AIRouter {
       return response.ok;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Ad-hoc connectivity test for a single provider, used by the Connections
+   * UI's [Test] button. Reuses the same reachability probes run at startup
+   * (checkOllama / checkOpenAICompatible / checkClaudeCLI) — never spends a
+   * real completion call just to answer "is this configured correctly".
+   */
+  async testProvider(id: string): Promise<{ ok: boolean; message: string }> {
+    switch (id) {
+      case 'ollama': {
+        const endpoint = this.config.ollama?.endpoint || 'http://localhost:11434';
+        const ok = await this.checkOllama(endpoint);
+        return ok
+          ? { ok: true, message: `Reachable at ${endpoint}.` }
+          : { ok: false, message: `Not reachable at ${endpoint}. Is "ollama serve" running?` };
+      }
+      case 'openai': {
+        const customEndpoint = this.config.openai?.endpoint;
+        if (!customEndpoint) {
+          const hasKey = Boolean(await this.vault.get('openai_api_key'));
+          return hasKey
+            ? { ok: true, message: 'API key configured for api.openai.com.' }
+            : { ok: false, message: 'No OpenAI API key configured.' };
+        }
+        const ok = await this.checkOpenAICompatible(customEndpoint);
+        return ok
+          ? { ok: true, message: `Reachable at ${customEndpoint}.` }
+          : { ok: false, message: `Not reachable at ${customEndpoint}. Check the URL and that the server is running.` };
+      }
+      case 'claude-cli':
+      case 'claude-cli-opus': {
+        const probe = await this.checkClaudeCLI();
+        return probe.available
+          ? { ok: true, message: `Claude Code CLI ${probe.version || ''} logged in.`.trim() }
+          : { ok: false, message: probe.reason || 'Claude Code CLI is not available.' };
+      }
+      default: {
+        if (!PROVIDER_DEFAULTS[id]) {
+          return { ok: false, message: `Unknown provider "${id}".` };
+        }
+        const provider = this.providers.get(id);
+        return provider?.available
+          ? { ok: true, message: `Configured (${provider.endpoint}).` }
+          : { ok: false, message: 'No API key configured for this provider.' };
+      }
     }
   }
 
@@ -1358,8 +1436,10 @@ export class AIRouter {
     for (const providerId of preference) {
       const provider = this.providers.get(providerId);
       if (provider?.available) {
-        // Check budget — skip non-free providers if over budget
-        if (provider.tier !== 'free' && this.costs.isOverBudget()) {
+        // Check budget — skip metered providers if over budget. 'local' is
+        // exempt alongside 'free': it's a zero-cost self-hosted server, not
+        // something that can trip the spend cap.
+        if (provider.tier !== 'free' && provider.tier !== 'local' && this.costs.isOverBudget()) {
           continue;
         }
         return provider;
@@ -1403,12 +1483,13 @@ export class AIRouter {
     }
 
     const overBudget = this.costs?.isOverBudget?.() ?? false;
-    // Prefer free providers first so we don't silently burn budget on fallback.
+    // Prefer free (and local, equally zero-cost) providers first so we don't
+    // silently burn budget on fallback.
     const freeProviders: AIProvider[] = [];
     const paidProviders: AIProvider[] = [];
     for (const [id, provider] of this.providers) {
       if (sameTransport.has(id) || !provider.available) continue;
-      if (provider.tier === 'free') freeProviders.push(provider);
+      if (provider.tier === 'free' || provider.tier === 'local') freeProviders.push(provider);
       else paidProviders.push(provider);
     }
     if (freeProviders.length > 0) return freeProviders[0];
@@ -2010,8 +2091,13 @@ export class AIRouter {
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
     };
+    // Local servers (LM Studio, vLLM, llama.cpp) are "FREE, NO KEY" by design
+    // — only send Authorization when a key actually exists, rather than
+    // sending a literal "Bearer undefined".
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
     // OpenRouter recommends (but doesn't require) HTTP-Referer + X-Title
     // headers for ranking on their leaderboard. Since AuthorAgent is local-only,
     // we send a stable referrer string. Harmless for other providers.

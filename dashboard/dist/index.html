@@ -1454,19 +1454,43 @@ textarea { resize: vertical; min-height: 60px; }
         </div>
       </div>
 
+      <!-- Local / Custom OpenAI-compatible endpoint (LM Studio, vLLM, llama.cpp) -->
+      <div class="card" id="openaiEndpointCard">
+        <div class="card-title">Local AI (LM Studio / vLLM / llama.cpp) — free, no key</div>
+        <p class="hint" style="margin-bottom:12px;">Point the OpenAI provider slot at any OpenAI-compatible local server instead of api.openai.com. Requests through a custom endpoint are billed at $0 and never count against the budget cap. Leave blank to use api.openai.com (requires an OpenAI API key above).</p>
+        <div class="form-group">
+          <label>Endpoint</label>
+          <input type="text" id="openaiEndpointInput" placeholder="http://localhost:1234/v1">
+        </div>
+        <button class="success" id="btnSaveOpenaiEndpoint">Save & Reconnect</button>
+      </div>
+
+      <!-- Claude Code CLI (subscription) -->
+      <div class="card" id="claudeCliCard">
+        <div class="card-title">Claude Code CLI (subscription) — free</div>
+        <p class="hint" style="margin-bottom:12px;">Rides an existing <code>claude login</code> session (Pro/Max subscription) instead of a metered API key. Requires the <code>claude</code> CLI installed and logged in on this machine.</p>
+        <div class="form-group-inline">
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="claudeCliEnabled" style="width:auto;"> Enabled</label>
+          </div>
+          <div class="form-group">
+            <label>CLI binary path (optional)</label>
+            <input type="text" id="claudeCliBinPath" placeholder="auto-detected">
+          </div>
+        </div>
+        <button class="success" id="btnSaveClaudeCli">Save & Reconnect</button>
+      </div>
+
       <!-- Global AI Provider -->
       <div class="card">
         <div class="card-title">Default AI Provider</div>
         <p class="hint" style="margin-bottom:12px;">Force all tasks to use one provider instead of smart tier routing. Per-project settings override this.</p>
         <div class="form-group">
+          <!-- Options are populated dynamically from GET /api/models (see
+               populateGlobalProviderOptions) so this list can never drift out
+               of sync with the router's known providers (e.g. claude-cli). -->
           <select id="globalProviderSelect">
             <option value="">Auto — smart tiered routing (recommended)</option>
-            <option value="ollama">Ollama (local, free)</option>
-            <option value="gemini">Gemini (free tier)</option>
-            <option value="deepseek">DeepSeek (cheap)</option>
-            <option value="openrouter">OpenRouter (one key, any model)</option>
-            <option value="claude">Claude (premium)</option>
-            <option value="openai">OpenAI GPT (premium)</option>
           </select>
         </div>
         <button class="success" id="btnSaveGlobalProvider">Save Provider</button>
@@ -1854,6 +1878,8 @@ function loadSettingsConnections() {
   loadKeys();
   loadAiModels();
   loadOllamaConfig();
+  loadOpenaiEndpointConfig();
+  loadClaudeCliConfig();
   loadOpenrouterConfig();
   loadGlobalProvider();
   loadGlobalImageProvider();
@@ -4244,8 +4270,39 @@ if (btnLoadKeysFromFiles) {
 // POSTs { provider, model } and patches the row from the response.
 var providerLabels = {
   ollama: 'Ollama (local)', gemini: 'Gemini', deepseek: 'DeepSeek',
-  claude: 'Claude / Anthropic', openai: 'OpenAI GPT', openrouter: 'OpenRouter'
+  claude: 'Claude / Anthropic', openai: 'OpenAI GPT', openrouter: 'OpenRouter',
+  'claude-cli': 'Claude Code CLI (subscription)',
+  'claude-cli-opus': 'Claude Code CLI (subscription, opus)'
 };
+
+// Short "(tier)" suffix for the Default AI Provider dropdown — mirrors the
+// AI Models list's tier badge so both surfaces describe cost the same way.
+function providerTierSuffix(tier) {
+  if (tier === 'free') return 'free';
+  if (tier === 'cheap') return 'cheap';
+  if (tier === 'local') return 'local, $0';
+  return 'premium';
+}
+
+// Populates #globalProviderSelect from GET /api/models's provider list
+// instead of a hardcoded <option> set, so it can never omit a real provider
+// (e.g. claude-cli) or offer one the router doesn't actually know about.
+// claude-cli-opus is deliberately excluded — it's an automatic swap for
+// prose-quality task types (see router.ts CLAUDE_CLI_PREMIUM_TASKS), not a
+// provider a user picks directly as their default.
+function populateGlobalProviderOptions(providers) {
+  var sel = document.getElementById('globalProviderSelect');
+  if (!sel) return;
+  var current = sel.value;
+  var html = '<option value="">Auto — smart tiered routing (recommended)</option>';
+  providers.forEach(function(p) {
+    if (p.id === 'claude-cli-opus') return;
+    var label = (providerLabels[p.id] || p.id) + ' (' + providerTierSuffix(p.tier) + ')';
+    html += '<option value="' + esc(p.id) + '">' + esc(label) + '</option>';
+  });
+  sel.innerHTML = html;
+  sel.value = current;
+}
 
 function formatModelPrice(price) {
   if (!price) return '';
@@ -4284,6 +4341,7 @@ function renderAiModels(providers) {
       '<input type="text" class="ai-model-custom" data-provider="' + esc(p.id) + '" placeholder="custom model name" ' +
         'style="min-width:180px;display:' + (isCustom ? 'inline-block' : 'none') + ';" value="' + (isCustom ? esc(p.currentModel) : '') + '">' +
       '<button class="small btn-save-model" data-provider="' + esc(p.id) + '">Save</button>' +
+      '<button class="small btn-test-provider" data-provider="' + esc(p.id) + '">Test</button>' +
       availTag;
     wrap.appendChild(row);
 
@@ -4293,6 +4351,12 @@ function renderAiModels(providers) {
     priceEl.style.cssText = 'margin-top:4px;';
     priceEl.innerHTML = 'Current: <code>' + esc(p.currentModel) + '</code> — ' + formatModelPrice(p.price);
     wrap.appendChild(priceEl);
+
+    var testResultEl = document.createElement('div');
+    testResultEl.className = 'hint';
+    testResultEl.setAttribute('data-test-result-for', p.id);
+    testResultEl.style.cssText = 'margin-top:4px;display:none;';
+    wrap.appendChild(testResultEl);
 
     el.appendChild(wrap);
   });
@@ -4324,6 +4388,33 @@ function renderAiModels(providers) {
           }
         }
       }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+    });
+  });
+
+  // Test handler — POSTs to /api/providers/:id/test and shows the result
+  // inline (reachability/auth probe, not a real completion call).
+  el.querySelectorAll('.btn-test-provider').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var providerId = btn.getAttribute('data-provider');
+      var resultEl = el.querySelector('[data-test-result-for="' + providerId + '"]');
+      btn.disabled = true;
+      btn.textContent = 'Testing…';
+      api('POST', '/api/providers/' + encodeURIComponent(providerId) + '/test').then(function(data) {
+        if (resultEl) {
+          resultEl.style.display = 'block';
+          resultEl.style.color = data && data.ok ? 'var(--success)' : 'var(--danger)';
+          resultEl.textContent = (data && data.ok ? '✓ ' : '✗ ') + ((data && data.message) || 'No response');
+        }
+      }).catch(function(e) {
+        if (resultEl) {
+          resultEl.style.display = 'block';
+          resultEl.style.color = 'var(--danger)';
+          resultEl.textContent = '✗ ' + e.message;
+        }
+      }).finally(function() {
+        btn.disabled = false;
+        btn.textContent = 'Test';
+      });
     });
   });
 }
@@ -4393,9 +4484,92 @@ if (btnSaveOllama) {
     ]).then(function() {
       // Trigger AI router reinitialization so the new endpoint takes effect immediately
       return api('POST', '/api/providers/refresh');
-    }).then(function() {
-      showToast('Ollama config saved & reconnected', 'success');
+    }).then(function(refreshData) {
+      var providers = (refreshData && refreshData.providers) || [];
+      var connected = providers.some(function(p) { return p.id === 'ollama'; });
+      if (connected) {
+        showToast('Ollama config saved & reconnected', 'success');
+      } else {
+        // The endpoint saved fine, but didn't answer the /api/tags probe —
+        // most likely pointed at a non-Ollama host/port. Surfacing this
+        // beats failing silently until the next completion call.
+        showToast('Saved, but "' + ep + '" did not respond like an Ollama server — check the URL and that "ollama serve" is running.', 'error');
+      }
       loadOllamaConfig();
+      loadStatus();
+    }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+  });
+}
+
+// ── Local / custom OpenAI-compatible endpoint (LM Studio, vLLM, llama.cpp) ──
+// Config path ai.openai.endpoint was already an allowed /api/config/update
+// target (system.ts safePaths) but had no UI field — this was only settable
+// by hand-editing config/user.json.
+function loadOpenaiEndpointConfig() {
+  api('GET', '/api/config').then(function(data) {
+    var ep = document.getElementById('openaiEndpointInput');
+    if (ep) ep.value = (data.ai && data.ai.openai && data.ai.openai.endpoint) || '';
+  });
+}
+
+var btnSaveOpenaiEndpoint = document.getElementById('btnSaveOpenaiEndpoint');
+if (btnSaveOpenaiEndpoint) {
+  btnSaveOpenaiEndpoint.addEventListener('click', function() {
+    var ep = document.getElementById('openaiEndpointInput').value.trim();
+    api('POST', '/api/config/update', { path: 'ai.openai.endpoint', value: ep }).then(function() {
+      return api('POST', '/api/providers/refresh');
+    }).then(function(refreshData) {
+      var providers = (refreshData && refreshData.providers) || [];
+      var openai = providers.find(function(p) { return p.id === 'openai'; });
+      if (!ep) {
+        showToast('Cleared — OpenAI provider will use api.openai.com', 'success');
+      } else if (openai) {
+        showToast('Local endpoint saved & reconnected (tier: ' + esc(openai.tier) + ')', 'success');
+      } else {
+        showToast('Saved, but "' + ep + '" did not respond — check the URL and that the server is running.', 'error');
+      }
+      loadOpenaiEndpointConfig();
+      loadAiModels();
+      loadStatus();
+    }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+  });
+}
+
+// ── Claude Code CLI (subscription) ──
+function loadClaudeCliConfig() {
+  api('GET', '/api/config').then(function(data) {
+    var cli = (data.ai && data.ai['claude-cli']) || {};
+    var enabled = document.getElementById('claudeCliEnabled');
+    var binPath = document.getElementById('claudeCliBinPath');
+    if (enabled) enabled.checked = Boolean(cli.enabled);
+    if (binPath) binPath.value = cli.binPath || '';
+  });
+}
+
+var btnSaveClaudeCli = document.getElementById('btnSaveClaudeCli');
+if (btnSaveClaudeCli) {
+  btnSaveClaudeCli.addEventListener('click', function() {
+    var enabled = document.getElementById('claudeCliEnabled').checked;
+    var binPath = document.getElementById('claudeCliBinPath').value.trim();
+    // Save binPath first so it's already persisted by the time `enabled`
+    // flips to true and the router resolves+caches the binary for the
+    // first time (see resolveClaudeCliBin in router.ts).
+    api('POST', '/api/config/update', { path: 'ai.claude-cli.binPath', value: binPath }).then(function() {
+      return api('POST', '/api/config/update', { path: 'ai.claude-cli.enabled', value: enabled });
+    }).then(function() {
+      return api('POST', '/api/providers/refresh');
+    }).then(function(refreshData) {
+      var providers = (refreshData && refreshData.providers) || [];
+      var connected = providers.some(function(p) { return p.id === 'claude-cli'; });
+      if (!enabled) {
+        showToast('Claude Code CLI disabled', 'success');
+      } else if (connected) {
+        showToast('Claude Code CLI connected', 'success');
+      } else {
+        showToast('Saved, but Claude Code CLI is not available — run "claude login" and check the binary path.', 'error');
+      }
+      loadClaudeCliConfig();
+      loadAiModels();
       loadStatus();
     }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
   });
@@ -4534,7 +4708,10 @@ document.addEventListener('click', function(e) {
 
 // ── Global Provider Preference ──
 function loadGlobalProvider() {
-  api('GET', '/api/config').then(function(data) {
+  api('GET', '/api/models').then(function(modelsData) {
+    populateGlobalProviderOptions((modelsData && modelsData.providers) || []);
+    return api('GET', '/api/config');
+  }).then(function(data) {
     var sel = document.getElementById('globalProviderSelect');
     if (sel && data.ai) sel.value = data.ai.preferredProvider || '';
   });
@@ -6729,5 +6906,13 @@ startPolling();
 
 })();
 </script>
+
+<!-- ═══════════════════════════════════════════════
+     M2.1: Preact-mounted panels (dashboard/src, built via
+     `npm run build:ui` -> review.js). No shared state with
+     the legacy script above — see dashboard/src/bridge.ts.
+     ═══════════════════════════════════════════════ -->
+<div id="review-panel-root"></div>
+<script src="review.js"></script>
 </body>
 </html>

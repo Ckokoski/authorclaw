@@ -261,6 +261,59 @@ describe('AIRouter provider selection and tiering (mocked vault/network)', () =>
     });
   });
 
+  describe('OpenAI-compatible local endpoint (LM Studio / vLLM / llama.cpp) — FREE, NO KEY', () => {
+    it('registers the openai provider at $0 cost / tier "local" when a local endpoint is configured but no API key is saved', async () => {
+      (global.fetch as any).mockImplementation((url: string) =>
+        url.includes('/models')
+          ? Promise.resolve({ ok: true })
+          : Promise.reject(new Error('no network in tests'))
+      );
+      const router = new AIRouter(
+        { ollama: { enabled: false }, openai: { endpoint: 'http://100.122.206.123:1234/v1' } },
+        vault, costs,
+      );
+      await router.initialize();
+      const openai = router.getActiveProviders().find(p => p.id === 'openai');
+      expect(openai).toBeDefined();
+      expect(openai!.tier).toBe('local');
+      expect(openai!.costPer1kInput).toBe(0);
+      expect(openai!.costPer1kOutput).toBe(0);
+      expect(openai!.available).toBe(true);
+    });
+
+    it('getProviderModelInfo also reports $0/"local" for the openai slot with no key saved', async () => {
+      (global.fetch as any).mockImplementation((url: string) =>
+        url.includes('/models')
+          ? Promise.resolve({ ok: true })
+          : Promise.reject(new Error('no network in tests'))
+      );
+      const router = new AIRouter(
+        { ollama: { enabled: false }, openai: { endpoint: 'http://100.122.206.123:1234/v1' } },
+        vault, costs,
+      );
+      await router.initialize();
+      const info = router.getProviderModelInfo().find(p => p.id === 'openai')!;
+      expect(info.tier).toBe('local');
+      expect(info.price.costPer1kInput).toBe(0);
+      expect(info.price.costPer1kOutput).toBe(0);
+    });
+
+    it('is selectable as a routing candidate with no OpenAI key saved (free-tier routing)', async () => {
+      (global.fetch as any).mockImplementation((url: string) =>
+        url.includes('/models')
+          ? Promise.resolve({ ok: true })
+          : Promise.reject(new Error('no network in tests'))
+      );
+      const router = new AIRouter(
+        { ollama: { enabled: false }, openai: { endpoint: 'http://100.122.206.123:1234/v1' } },
+        vault, costs,
+      );
+      await router.initialize();
+      // 'general' tier = 'free'; local-tier openai is the only provider registered.
+      expect(router.selectProvider('general').id).toBe('openai');
+    });
+  });
+
   describe('model resolution precedence (override > config > default)', () => {
     let workspaceDir: string;
 
@@ -851,10 +904,22 @@ describe('runClaudeCliOnce (streaming behavior, fake spawn)', () => {
   });
 
   it('two concurrent calls get distinct temp files, both cleaned up', async () => {
-    const child1 = makeFakeChild();
-    const child2 = makeFakeChild();
-    const children = [child1, child2];
-    const fakeSpawn = vi.fn((_bin: string, _args: string[], _opts?: any) => children.shift());
+    // writeSystemPromptFile does a real fs write before spawning, so which of
+    // the two calls reaches spawnFn first is a genuine (and irrelevant) race —
+    // fake timers don't control real I/O. Route each fake child by reading
+    // back which system prompt its temp file actually holds, rather than
+    // assuming spawn call order matches invocation order.
+    // spawnFn must return synchronously (real child_process.spawn does), and
+    // the prompt file is already fully written by the time spawnFn runs
+    // (writeSystemPromptFile is awaited beforehand), so a sync read is safe.
+    const { readFileSync } = await import('node:fs');
+    const childA = makeFakeChild();
+    const childB = makeFakeChild();
+    const fakeSpawn = vi.fn((_bin: string, args: string[], _opts?: any) => {
+      const filePath = args[args.indexOf('--system-prompt-file') + 1];
+      const content = readFileSync(filePath, 'utf8');
+      return content.includes('sys A') ? childA : childB;
+    });
     const router = new AIRouter({ 'claude-cli': { enabled: false } }, vault, costs, undefined, { spawn: fakeSpawn as any });
 
     const p1 = (router as any).runClaudeCliOnce(
@@ -865,14 +930,12 @@ describe('runClaudeCliOnce (streaming behavior, fake spawn)', () => {
     );
     await vi.waitFor(() => expect(fakeSpawn).toHaveBeenCalledTimes(2));
 
-    const args1: string[] = fakeSpawn.mock.calls[0][1];
-    const args2: string[] = fakeSpawn.mock.calls[1][1];
-    const file1 = args1[args1.indexOf('--system-prompt-file') + 1];
-    const file2 = args2[args2.indexOf('--system-prompt-file') + 1];
+    const files = fakeSpawn.mock.calls.map(([, args]) => args[args.indexOf('--system-prompt-file') + 1]);
+    const [file1, file2] = files;
     expect(file1).not.toBe(file2);
 
-    child1.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'A' }) + '\n'));
-    child2.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'B' }) + '\n'));
+    childA.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'A' }) + '\n'));
+    childB.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', is_error: false, result: 'B' }) + '\n'));
 
     const [r1, r2] = await Promise.all([p1, p2]);
     expect(r1.text).toBe('A');

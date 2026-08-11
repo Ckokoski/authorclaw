@@ -9,8 +9,10 @@
  * registerXRoutes(ctx) in the exact order the endpoints were originally
  * registered, so Express route-matching precedence is unchanged.
  *
- * The public signature — createAPIRoutes(app, gateway, rootDir) — is
- * unchanged, so gateway/src/index.ts requires no edit.
+ * The public signature — createAPIRoutes(app, gateway, rootDir, workspaceDir) —
+ * grew a `workspaceDir` param (ALP-1614) so per-domain route modules can
+ * write project/step output under the resolved per-book workspace instead of
+ * always `<rootDir>/workspace`.
  */
 
 // NOTE: All endpoints are currently unauthenticated.
@@ -47,9 +49,10 @@ import { registerWave3GatedRoutes } from './routes/wave3-gated.js';
 import { registerWebsiteRoutes } from './routes/website.js';
 import { registerReaderPanelRoutes } from './routes/reader-panel.js';
 import { registerReaderFeedbackRoutes } from './routes/reader-feedback.js';
+import { registerReviewRoutes } from './routes/review.js';
 
-export function createAPIRoutes(app: Application, gateway: any, rootDir?: string): void {
-  const ctx = createApiContext(app, gateway, rootDir);
+export function createAPIRoutes(app: Application, gateway: any, rootDir?: string, workspaceDir?: string): void {
+  const ctx = createApiContext(app, gateway, rootDir, workspaceDir);
 
   // Registration order matches the original monolithic routes.ts exactly —
   // this matters for Express route-matching precedence (e.g. static routes
@@ -81,4 +84,5 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   registerWebsiteRoutes(ctx);
   registerReaderPanelRoutes(ctx);
   registerReaderFeedbackRoutes(ctx);
+  registerReviewRoutes(ctx);
 }

@@ -1,0 +1,405 @@
+/**
+ * Review API routes (M1.5 — ALP-1559).
+ *
+ * Exposes the M1 gated-human-review pipeline (M1.1 doc versioning, M1.2 gate
+ * state machine, M1.3 conductor wiring, M1.4 dirty dependency graph) over
+ * HTTP so the whole review loop — inspect a step's version history, diff two
+ * versions, approve or send back for revision, see what a change impacts
+ * downstream, and configure which phases/steps gate at all — is reachable
+ * without a UI (this file's own acceptance criteria: every route below is
+ * curl-exercisable end to end).
+ */
+import { Request, Response } from 'express';
+import { join } from 'path';
+import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
+import type { ApiContext } from '../context.js';
+import { docVersionService } from '../../services/doc-versions.js';
+import { computeTransitiveDependents } from '../../services/dependency-graph.js';
+import { addComment, listComments, setCommentStatus, CommentValidationError } from '../../services/comments.js';
+import type { Project, ProjectStep } from '../../services/project-templates.js';
+import { resolveStepArtifactDir, stepOutputFileName } from '../../services/project-paths.js';
+
+/**
+ * Where a step's artifacts actually live (ALP-1548: per-phase subfolder, with
+ * a legacy flat-dir fallback). Shared with the writer via project-paths.ts —
+ * this file used to re-derive the flat path itself, which broke every review
+ * route the moment the executor started writing per-phase.
+ */
+function projectDirFor(workspaceDir: string, project: Project, step: ProjectStep): string {
+  return resolveStepArtifactDir(workspaceDir, project, step);
+}
+
+const stepFileNameFor = stepOutputFileName;
+
+function findStep(project: Project, stepId: unknown): ProjectStep | undefined {
+  return project.steps.find((s) => s.id === stepId);
+}
+
+type DiffOp = { op: 'equal' | 'add' | 'remove'; line: string };
+
+/**
+ * Minimal line-level LCS diff — no external dependency for something this
+ * small. O(n*m) on line counts, which is fine for step-output-sized documents
+ * (hundreds to low thousands of lines, not whole-book manuscripts).
+ */
+function diffLines(fromText: string, toText: string): DiffOp[] {
+  const a = fromText.split('\n');
+  const b = toText.split('\n');
+  const n = a.length;
+  const m = b.length;
+
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+
+  const ops: DiffOp[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      ops.push({ op: 'equal', line: a[i] });
+      i++; j++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      ops.push({ op: 'remove', line: a[i] });
+      i++;
+    } else {
+      ops.push({ op: 'add', line: b[j] });
+      j++;
+    }
+  }
+  while (i < n) { ops.push({ op: 'remove', line: a[i] }); i++; }
+  while (j < m) { ops.push({ op: 'add', line: b[j] }); j++; }
+  return ops;
+}
+
+export function registerReviewRoutes(ctx: ApiContext): void {
+  const { app, gateway, workspaceDir } = ctx;
+
+  function getEngine(res: Response): any | null {
+    const engine = gateway.getProjectEngine?.();
+    if (!engine) {
+      res.status(503).json({ error: 'Project engine not initialized' });
+      return null;
+    }
+    return engine;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // Cross-book review queue
+  // ═══════════════════════════════════════════════════════════
+
+  // GET /api/reviews — every step (across every project/"book") currently
+  // awaiting a human decision. Registered before /api/projects/:id/... below
+  // is irrelevant — this is its own top-level path, no collision risk.
+  app.get('/api/reviews', (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+
+    const projects: Project[] = engine.listProjects();
+    const queue = projects.flatMap((project) =>
+      project.steps
+        .filter((step) => step.status === 'awaiting_review')
+        .map((step) => ({
+          projectId: project.id,
+          projectTitle: project.title,
+          stepId: step.id,
+          stepLabel: step.label,
+          phase: step.phase,
+          gate: step.gate,
+          dirty: step.dirty,
+        })),
+    );
+
+    res.json({ queue, count: queue.length });
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Step version history
+  // ═══════════════════════════════════════════════════════════
+
+  app.get('/api/projects/:id/steps/:stepId/versions', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const canonicalPath = join(projectDir, stepFileNameFor(step));
+    const versions = await docVersionService.getVersions(projectDir, step.id, canonicalPath);
+    res.json({ stepId: step.id, versions });
+  });
+
+  app.get('/api/projects/:id/steps/:stepId/versions/:v', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const versionNumber = Number(req.params.v);
+    if (!Number.isInteger(versionNumber) || versionNumber < 1) {
+      return res.status(400).json({ error: 'Version must be a positive integer' });
+    }
+
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const content = await docVersionService.getVersionContent(projectDir, step.id, versionNumber);
+    if (content === null) return res.status(404).json({ error: `Version v${versionNumber} not found` });
+    res.json({ stepId: step.id, v: versionNumber, content });
+  });
+
+  app.get('/api/projects/:id/steps/:stepId/diff', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const from = Number(req.query.from);
+    const to = Number(req.query.to);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < 1) {
+      return res.status(400).json({ error: 'from and to query params must be positive integers' });
+    }
+
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const [fromContent, toContent] = await Promise.all([
+      docVersionService.getVersionContent(projectDir, step.id, from),
+      docVersionService.getVersionContent(projectDir, step.id, to),
+    ]);
+    if (fromContent === null) return res.status(404).json({ error: `Version v${from} not found` });
+    if (toContent === null) return res.status(404).json({ error: `Version v${to} not found` });
+
+    res.json({ stepId: step.id, from, to, diff: diffLines(fromContent, toContent) });
+  });
+
+  // Manual save -> new version. Lets a reviewer edit a step's content directly
+  // (e.g. a quick typo fix) without going through an agent rerun.
+  app.post('/api/projects/:id/steps/:stepId/versions', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const { content, note } = req.body || {};
+    if (typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ error: 'content (non-empty string) required' });
+    }
+
+    const { writeFile, mkdir } = await import('fs/promises');
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    await mkdir(projectDir, { recursive: true });
+    const version = await docVersionService.appendVersion(projectDir, step.id, content, 'user', note);
+    await writeFile(join(projectDir, stepFileNameFor(step)), content, 'utf-8');
+
+    const updated = engine.saveStepResult(project.id, step.id, content);
+    res.json({ stepId: step.id, version, step: updated });
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Comments (M2.3 — ALP-1565, section + span anchoring)
+  // ═══════════════════════════════════════════════════════════
+
+  app.get('/api/projects/:id/steps/:stepId/comments', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const comments = await listComments(projectDir, step.id);
+    res.json({ stepId: step.id, comments });
+  });
+
+  app.post('/api/projects/:id/steps/:stepId/comments', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const { type, sectionId, quote, prefixContext, suffixContext, body, author } = req.body || {};
+    if (type !== 'section' && type !== 'span') {
+      return res.status(400).json({ error: 'type must be "section" or "span"' });
+    }
+    if (typeof sectionId !== 'string' || !sectionId) {
+      return res.status(400).json({ error: 'sectionId (string) required' });
+    }
+    if (typeof body !== 'string' || !body.trim()) {
+      return res.status(400).json({ error: 'body (non-empty string) required' });
+    }
+
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const canonicalPath = join(projectDir, stepFileNameFor(step));
+    if (!existsSync(canonicalPath)) {
+      return res.status(400).json({ error: 'Step has no content yet to anchor a comment to' });
+    }
+    const currentContent = await readFile(canonicalPath, 'utf-8');
+
+    try {
+      const comment = await addComment(
+        projectDir,
+        step.id,
+        currentContent,
+        type === 'section'
+          ? { type: 'section', sectionId, body, author }
+          : {
+              type: 'span',
+              sectionId,
+              quote: typeof quote === 'string' ? quote : '',
+              prefixContext: typeof prefixContext === 'string' ? prefixContext : '',
+              suffixContext: typeof suffixContext === 'string' ? suffixContext : '',
+              body,
+              author,
+            },
+      );
+      res.json({ comment });
+    } catch (err) {
+      if (err instanceof CommentValidationError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+  });
+
+  app.patch('/api/projects/:id/steps/:stepId/comments/:commentId', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const { status } = req.body || {};
+    if (status !== 'open' && status !== 'resolved') {
+      return res.status(400).json({ error: 'status must be "open" or "resolved"' });
+    }
+
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const comment = await setCommentStatus(projectDir, step.id, String(req.params.commentId), status);
+    if (!comment) return res.status(404).json({ error: 'Comment not found' });
+    res.json({ comment });
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Gate decisions
+  // ═══════════════════════════════════════════════════════════
+
+  app.post('/api/projects/:id/steps/:stepId/approve', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+    if (step.status !== 'awaiting_review') {
+      return res.status(400).json({ error: `Step is "${step.status}", not awaiting_review` });
+    }
+
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const currentVersion = await docVersionService.getCurrentVersion(projectDir, step.id);
+    const decided = engine.decideStepGate(project.id, step.id, 'approved', currentVersion);
+    res.json({ step: decided, project: engine.getProject(project.id) });
+  });
+
+  app.post('/api/projects/:id/steps/:stepId/revise', async (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const { comments, notes } = req.body || {};
+    const feedback = [comments, notes].filter((s) => typeof s === 'string' && s.trim()).join('\n\n');
+    if (!feedback) {
+      return res.status(400).json({ error: 'comments and/or notes (string) required' });
+    }
+
+    const result = await engine.reviseStep(project.id, step.id, feedback, workspaceDir);
+
+    if (result.ok) {
+      return res.json({ success: true, response: result.response, version: result.version, project: result.project });
+    }
+    switch (result.kind) {
+      case 'no-project':
+        return res.status(404).json({ error: 'Project not found' });
+      case 'no-step':
+        return res.status(404).json({ error: 'Step not found' });
+      case 'not-awaiting-review':
+        return res.status(400).json({ error: `Step is "${step.status}", not awaiting_review` });
+      case 'provider-failure':
+        return res.json({ success: false, error: 'AI provider failure — see detail', detail: result.detail, project: result.project });
+      case 'short-response':
+        return res.json({ success: false, error: result.reason, project: result.project });
+      case 'error':
+        return res.status(500).json({ error: 'Revision failed: ' + result.error, project: result.project });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Downstream impact (M1.4 dependency graph)
+  // ═══════════════════════════════════════════════════════════
+
+  app.get('/api/projects/:id/steps/:stepId/impact', (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const dependentIds = computeTransitiveDependents(project.steps, step.id);
+    const dirty = project.steps.filter((s) => dependentIds.has(s.id) && s.dirty);
+
+    res.json({
+      stepId: step.id,
+      downstreamStepIds: [...dependentIds],
+      dirty: dirty.map((s) => ({ stepId: s.id, label: s.label, marker: s.dirty })),
+    });
+  });
+
+  app.post('/api/projects/:id/steps/:stepId/clean', (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const step = findStep(project, req.params.stepId);
+    if (!step) return res.status(404).json({ error: 'Step not found' });
+
+    const cleaned = engine.markStepClean(project.id, step.id);
+    res.json({ step: cleaned });
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // Gate configuration
+  // ═══════════════════════════════════════════════════════════
+
+  // PATCH /api/projects/:id/gates — { reviewGates?: {phase: bool}, stepGateOverrides?: {stepId: bool|null} }
+  app.patch('/api/projects/:id/gates', (req: Request, res: Response) => {
+    const engine = getEngine(res);
+    if (!engine) return;
+    const project: Project | undefined = engine.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const { reviewGates, stepGateOverrides } = req.body || {};
+    if (reviewGates && (typeof reviewGates !== 'object' || Array.isArray(reviewGates))) {
+      return res.status(400).json({ error: 'reviewGates must be an object of {phase: boolean}' });
+    }
+    if (stepGateOverrides && (typeof stepGateOverrides !== 'object' || Array.isArray(stepGateOverrides))) {
+      return res.status(400).json({ error: 'stepGateOverrides must be an object of {stepId: boolean|null}' });
+    }
+
+    const updated = engine.updateReviewGates(project.id, { reviewGates, stepGateOverrides });
+    res.json({ project: updated });
+  });
+}

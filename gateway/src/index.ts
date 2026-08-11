@@ -37,6 +37,7 @@ import { AuthorOSService } from './services/author-os.js';
 import { TTSService } from './services/tts.js';
 import { ImageGenService } from './services/image-gen.js';
 import { ProjectEngine } from './services/projects.js';
+import { resolveStepGate } from './services/project-templates.js';
 import { PersonaService } from './services/personas.js';
 import { ContextEngine } from './services/context-engine.js';
 import { MemorySearchService } from './services/memory-search.js';
@@ -88,6 +89,7 @@ import { TranslationPipelineService } from './services/translation-pipeline.js';
 import { WebsiteBuilderService } from './services/website-builder.js';
 import { TelegramBridge } from './bridges/telegram.js';
 import { DiscordBridge } from './bridges/discord.js';
+import { NotifierRegistry, TelegramNotifier } from './services/notifier.js';
 import { createAPIRoutes } from './api/routes.js';
 import { logger } from './services/logger.js';
 import { ServiceContainer } from './services/container.js';
@@ -138,6 +140,11 @@ class AuthorAgentGateway {
   // of the service container / getServices() projection.
   private telegram?: TelegramBridge;
   private discord?: DiscordBridge;
+
+  // Channel-agnostic notification registry — sits on top of the bridges.
+  // Notifiers hold a live getter back to their bridge, so registration
+  // happens once here and survives telegram connect/disconnect cycles.
+  private notifiers = new NotifierRegistry();
 
   // ── Service accessors ──
   // These delegate to the ServiceContainer so the ~2,600 lines of gateway code
@@ -306,6 +313,11 @@ class AuthorAgentGateway {
         `origin=${err.req?.headers?.origin || 'none'} url=${err.req?.url || 'unknown'}`
       );
     });
+
+    // Register notification channels. The getter reads `this.telegram` live,
+    // so this registration is one-time even though the bridge itself gets
+    // created/torn down later (Phase 8) and can reconnect via the dashboard.
+    this.notifiers.register(new TelegramNotifier(() => this.telegram));
 
     // Security middleware
     this.app.use(helmet({
@@ -509,7 +521,7 @@ class AuthorAgentGateway {
     logger.info(`  ✓ Personas: ${this.personas.getCount()} author persona(s) loaded`);
 
     // ── Phase 6e: Project Engine ──
-    this.projectEngine = new ProjectEngine(this.authorOS, ROOT_DIR);
+    this.projectEngine = new ProjectEngine(this.authorOS, WORKSPACE_DIR);
     // Wire AI capabilities for dynamic planning
     this.projectEngine.setAI(
       (request) => this.aiRouter.complete(request),
@@ -976,12 +988,14 @@ class AuthorAgentGateway {
         stepsRemaining: g.steps.filter(s => s.status === 'pending' || s.status === 'active').length,
         type: g.type,
       })),
-      // Broadcast status to dashboard (WebSocket) and Telegram
+      // Broadcast status to dashboard (WebSocket) and every connected
+      // notification channel (Telegram today; Discord/others register the
+      // same way once they exist — see services/notifier.ts).
       (message: string) => {
         this.io.emit('autonomous-status', { message, timestamp: new Date().toISOString() });
-        if (this.telegram) {
-          this.telegram.broadcastToAllowed?.(message);
-        }
+        this.notifiers.dispatch({ type: 'status', message }).catch(err =>
+          logger.warn('[notifiers] dispatch failed:', err)
+        );
       },
       // Self-improvement analysis callback
       async (projectId: string) => {
@@ -1230,7 +1244,7 @@ class AuthorAgentGateway {
     }
 
     // ── Phase 9: API Routes ──
-    createAPIRoutes(this.app, this, ROOT_DIR);
+    createAPIRoutes(this.app, this, ROOT_DIR, WORKSPACE_DIR);
     logger.info('  ✓ API routes registered');
 
     // ── Phase 10: WebSocket ──
@@ -1294,6 +1308,11 @@ class AuthorAgentGateway {
    * configured `server.host`:port when it's been set to something other than
    * localhost (e.g. a Tailscale IP), so the dashboard still works when
    * accessed remotely from a non-localhost origin.
+   *
+   * Behind a reverse proxy the browser's origin is the *proxy's* host:port,
+   * which this can't infer — `server.host` there is just the container bind
+   * address (0.0.0.0). AUTHORCLAW_ALLOWED_ORIGINS (comma-separated) adds those
+   * externally-visible origins explicitly; see deploy/nas/docker-compose.yml.
    */
   private getAllowedOrigins(): string[] {
     const port = this.config?.get?.('server.port', 3847) ?? 3847;
@@ -1301,6 +1320,10 @@ class AuthorAgentGateway {
     const host = this.config?.get?.('server.host', '127.0.0.1');
     if (host && host !== '127.0.0.1' && host !== 'localhost') {
       allowed.push(`http://${host}:${port}`);
+    }
+    for (const extra of (process.env.AUTHORCLAW_ALLOWED_ORIGINS ?? '').split(',')) {
+      const origin = extra.trim();
+      if (origin && !allowed.includes(origin)) allowed.push(origin);
     }
     return allowed;
   }
@@ -1453,6 +1476,7 @@ class AuthorAgentGateway {
       // Run one step and return the result
       try {
         const result = await handlers.startAndRunProject(resumable.id);
+        if ('gated' in result) return `🔒 **"${result.step}"** is ready for your review — pausing until you decide.`;
         if ('error' in result) return `Error: ${result.error}`;
         return `▶️ Resumed **"${resumable.title}"**\n\n**Completed:** ${result.completed}\n${result.response.substring(0, 500)}${result.response.length > 500 ? '...' : ''}\n\n${result.nextStep ? `**Next:** ${result.nextStep}` : '✅ Project complete!'}`;
       } catch (err) {
@@ -2061,7 +2085,9 @@ class AuthorAgentGateway {
        * Returns a short summary for Telegram + accurate word count.
        */
       async startAndRunProject(projectId: string): Promise<
-        { completed: string; response: string; wordCount: number; nextStep?: string } | { error: string }
+        | { completed: string; response: string; wordCount: number; nextStep?: string }
+        | { error: string }
+        | { gated: true; step: string }
       > {
         const project = gateway.projectEngine.getProject(projectId);
         if (!project) return { error: 'Project not found' };
@@ -2231,6 +2257,27 @@ class AuthorAgentGateway {
           logger.error('Failed to save project step output:', fileErr);
         }
 
+        // ── Gate check (M1.3 — ALP-1557, wired here per ALP-1610) ──────────
+        // A gated step (resolveStepGate() — project-templates.ts) opens its
+        // review gate instead of completing: the file is already saved above,
+        // so this only flips status -> 'awaiting_review' and skips every
+        // downstream hook (context-engine memory, manuscript assembly) below
+        // — none of that should treat unapproved content as canonical yet.
+        // Mirrors StepExecutor.runStep's gate branch (step-executor.ts).
+        if (resolveStepGate(activeStep, project)) {
+          gateway.projectEngine.openStepGate(projectId, activeStep.id, aiResponse);
+          gateway.heartbeat.addWords(wordCount);
+          gateway.activityLog.log({
+            type: 'gate_opened',
+            source: 'telegram',
+            goalId: projectId,
+            stepLabel: activeStep.label,
+            message: `🔒 "${activeStep.label}" is ready for your review — awaiting approval before the pipeline continues.`,
+            metadata: { wordCount },
+          });
+          return { gated: true, step: activeStep.label };
+        }
+
         // Complete the step and advance
         const nextStep = gateway.projectEngine.completeStep(projectId, activeStep.id, aiResponse);
 
@@ -2380,6 +2427,13 @@ class AuthorAgentGateway {
             gateway.telegram && (gateway.telegram.pauseRequested = false);
             if (afterStepProject?.status !== 'paused') gateway.projectEngine.pauseProject(projectId);
             await statusCallback(`⏸ Paused at step ${stepNumber}/${totalSteps}. Say "continue" to resume.`);
+            return;
+          }
+
+          if ('gated' in result) {
+            await statusCallback(
+              `🔒 ${stepNumber}/${totalSteps}: "${result.step}" is ready for your review — auto-run is pausing until you decide.`
+            );
             return;
           }
 
