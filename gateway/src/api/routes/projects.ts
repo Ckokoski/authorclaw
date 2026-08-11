@@ -5,6 +5,7 @@
  */
 import { Request, Response } from 'express';
 import type { ApiContext } from '../context.js';
+import { resolveStepOutputPath, listProjectOutputFiles } from '../../services/project-paths.js';
 
 export function registerProjectRoutes(ctx: ApiContext): void {
   const { app, gateway, services, workspaceDir } = ctx;
@@ -307,10 +308,10 @@ export function registerProjectRoutes(ctx: ApiContext): void {
       try {
         const { unlink } = await import('fs/promises');
         const { join: jp } = await import('path');
-        const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const projectDir = jp(workspaceDir, 'projects', projectSlug);
-        const filename = `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-        await unlink(jp(projectDir, filename)).catch(() => {});
+        // Resolve the real path (ALP-1548) — deleting a hand-built flat path
+        // silently no-opped for anything written into the per-phase dir, so
+        // "start clean" left the old output in place.
+        await unlink(resolveStepOutputPath(workspaceDir, project, step)).catch(() => {});
       } catch { /* non-fatal */ }
     }
 
@@ -335,17 +336,14 @@ export function registerProjectRoutes(ctx: ApiContext): void {
         const { rm } = await import('fs/promises');
         const { readdirSync, existsSync: ex } = await import('fs');
         const { join: jp } = await import('path');
-        const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const projectDir = jp(workspaceDir, 'projects', projectSlug);
-        if (ex(projectDir)) {
+        // Sweep BOTH the per-phase and legacy dirs (ALP-1548) — restarting a
+        // project that had only flat-dir cleanup left every new output behind.
+        for (const { name: f, path: filePath } of listProjectOutputFiles(workspaceDir, project)) {
           // Only delete .md files, preserve manuscript / compiled-output / revised files
           // unless restart is full (no keepCompleted).
-          const files = readdirSync(projectDir);
-          for (const f of files) {
-            if (!f.endsWith('.md')) continue;
-            if (keepCompleted && (f === 'manuscript.md' || f === 'compiled-output.md' || f === 'revised-manuscript.md' || f === 'revision-report.md')) continue;
-            await rm(jp(projectDir, f)).catch(() => {});
-          }
+          if (!f.endsWith('.md')) continue;
+          if (keepCompleted && (f === 'manuscript.md' || f === 'compiled-output.md' || f === 'revised-manuscript.md' || f === 'revision-report.md')) continue;
+          await rm(filePath).catch(() => {});
         }
       } catch { /* non-fatal */ }
     }

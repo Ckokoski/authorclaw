@@ -15,6 +15,7 @@ import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import type { ContextEngine, EntityEntry, ChapterSummary } from './context-engine.js';
+import { resolveStepOutputPath } from './project-paths.js';
 
 export interface ProjectStepLike {
   id: string;
@@ -189,7 +190,6 @@ export class BookBibleService {
     for (const id of projectIds) {
       const project = engine.getProject(id);
       if (!project) continue;
-      const projectDir = join(this.baseDir, 'workspace', 'projects', projectSlug(project.title));
 
       for (const step of project.steps || []) {
         if (step.status !== 'completed') continue;
@@ -202,8 +202,10 @@ export class BookBibleService {
               : null;
         if (!kind) continue;
 
-        const filename = `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-        const filePath = join(projectDir, filename);
+        // ALP-1548: resolve across the per-phase and legacy dirs. Keeps this
+        // service's own baseDir/workspace convention — only the phase-vs-flat
+        // lookup changes here.
+        const filePath = resolveStepOutputPath(join(this.baseDir, 'workspace'), project, step);
         if (!existsSync(filePath)) continue;
 
         try {

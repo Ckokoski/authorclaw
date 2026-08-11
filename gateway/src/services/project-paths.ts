@@ -5,7 +5,7 @@
  * is unchanged (keeps the project id for uniqueness) — purely an added folder
  * level. Writer + assembly reader both go through these so they never drift.
  */
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 /** Filesystem-safe slug of a title/label. Never returns empty. */
@@ -117,4 +117,56 @@ export function resolveStepOutputPath(
     }
   }
   return candidates.find((c) => existsSync(c)) ?? candidates[0];
+}
+
+/**
+ * Every directory that can hold this project's outputs, most-current first:
+ * the per-phase dir, then the legacy flat dir. Only existing dirs are
+ * returned, so callers can iterate without guarding.
+ *
+ * Use this for whole-directory work — listing, compiling, bulk delete.
+ * Single-step lookups belong in resolveStepOutputPath, which also handles
+ * the legacy filename spelling.
+ *
+ * Note the legacy dir is the PARENT of the per-phase dir, so anything walking
+ * these must filter to files (as listProjectOutputFiles does) or it will see
+ * the phase dir as an entry of the flat one.
+ */
+export function projectOutputDirs(
+  workspaceDir: string,
+  project: { title: string; type?: string; pipelinePhase?: number },
+): string[] {
+  const candidates = [projectOutputDir(workspaceDir, project), legacyProjectOutputDir(workspaceDir, project)];
+  const dirs: string[] = [];
+  for (const dir of candidates) {
+    if (!dirs.includes(dir) && existsSync(dir)) dirs.push(dir);
+  }
+  return dirs;
+}
+
+/**
+ * This project's output FILES across every dir above, most-current first and
+ * de-duplicated by filename — if a name exists in both the per-phase and the
+ * legacy dir, the per-phase copy wins, matching resolveStepOutputPath.
+ */
+export function listProjectOutputFiles(
+  workspaceDir: string,
+  project: { title: string; type?: string; pipelinePhase?: number },
+): Array<{ name: string; path: string }> {
+  const seen = new Set<string>();
+  const files: Array<{ name: string; path: string }> = [];
+  for (const dir of projectOutputDirs(workspaceDir, project)) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || seen.has(entry.name)) continue;
+      seen.add(entry.name);
+      files.push({ name: entry.name, path: join(dir, entry.name) });
+    }
+  }
+  return files;
 }

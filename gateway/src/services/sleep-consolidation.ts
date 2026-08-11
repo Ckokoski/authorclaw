@@ -35,6 +35,7 @@ import type { SeriesBibleService } from './series-bible.js';
 import type { PreferenceStore } from './preferences.js';
 import type { MemorySearchService } from './memory-search.js';
 import type { MemoryTierService, CoreDigest } from './memory-tier.js';
+import { resolveStepOutputPath } from './project-paths.js';
 
 // ═══════════════════════════════════════════════════════════
 // Injected closure / port types
@@ -409,11 +410,9 @@ export class SleepConsolidationService {
       if (step?.result && step.result.length > 200) return step.result;
       // Else try the on-disk step file: workspace/projects/<slug>/<stepId>-<slug>.md
       try {
-        const slug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const dir = join(this.workspaceDir, 'projects', slug);
-        if (step && existsSync(dir)) {
-          const fileSlug = step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-          const path = join(dir, `${step.id}-${fileSlug}.md`);
+        if (step) {
+          // ALP-1548: per-phase dir first, legacy flat dir as fallback.
+          const path = resolveStepOutputPath(this.workspaceDir, project, step);
           if (existsSync(path)) {
             const raw = await readFile(path, 'utf-8');
             const body = raw.replace(/^#\s.+\n\n/, '');

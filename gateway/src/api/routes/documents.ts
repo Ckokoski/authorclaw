@@ -9,9 +9,16 @@ import multer from 'multer';
 import { generateDocxBuffer } from '../../services/docx-export.js';
 import { generateEpubBuffer } from '../../services/epub-export.js';
 import { safePath, upload } from '../context.js';
+import {
+  slugify,
+  projectOutputDir,
+  projectOutputDirs,
+  listProjectOutputFiles,
+  resolveStepOutputPath,
+} from '../../services/project-paths.js';
 
 export function registerDocumentRoutes(ctx: ApiContext): void {
-  const { app, gateway, services, baseDir } = ctx;
+  const { app, gateway, services, baseDir, workspaceDir } = ctx;
 
   // ═══════════════════════════════════════════════════════════
   // Document Library (centralized document storage for large manuscripts)
@@ -432,21 +439,19 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
     const { readdir: rd, stat: st } = await import('fs/promises');
     const { existsSync: ex } = await import('fs');
 
-    const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
-
-    if (!ex(projectDir)) return res.json({ files: [] });
+    const projectSlug = slugify(project.title);
 
     try {
-      const entries = await rd(projectDir);
+      // ALP-1548: outputs live in the per-phase dir now, with older ones still
+      // in the flat dir. Listing only the flat dir silently returned a stale
+      // set — the phase dir is a directory entry, so the isFile() filter below
+      // dropped everything written after the migration.
       const files: Array<{ name: string; size: number; type: string }> = [];
-      for (const entry of entries) {
-        if (entry === 'uploads') continue; // skip uploads subfolder
-        const fullPath = j(projectDir, entry);
+      for (const { name, path: fullPath } of listProjectOutputFiles(workspaceDir, project)) {
+        if (name === 'uploads') continue; // skip uploads subfolder
         const info = await st(fullPath);
-        if (!info.isFile()) continue;
-        const ext = entry.split('.').pop()?.toLowerCase() || '';
-        files.push({ name: entry, size: info.size, type: ext });
+        const ext = name.split('.').pop()?.toLowerCase() || '';
+        files.push({ name, size: info.size, type: ext });
       }
       // Sort: manuscript files first, then by name
       files.sort((a, b) => {
@@ -473,16 +478,29 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
     const { existsSync: ex } = await import('fs');
 
     const filename = String(req.params.filename);
-    const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
-    const filePath = safePath(projectDir, filename);
+
+    // Check each candidate dir (per-phase, then legacy flat) through safePath,
+    // so the traversal guard still applies per-directory — a file is only
+    // served if it resolves INSIDE the dir it was found in.
+    const dirs = projectOutputDirs(workspaceDir, project);
+    let filePath: string | null = null;
+    let traversalBlocked = dirs.length > 0;
+    for (const dir of dirs) {
+      const candidate = safePath(dir, filename);
+      if (!candidate) continue;
+      traversalBlocked = false;
+      if (ex(candidate)) {
+        filePath = candidate;
+        break;
+      }
+    }
 
     // Security: ensure the resolved path is inside the project directory
-    if (!filePath) {
+    if (traversalBlocked) {
       return res.status(403).json({ error: 'Path traversal blocked' });
     }
 
-    if (!ex(filePath)) {
+    if (!filePath) {
       return res.status(404).json({ error: 'File not found' });
     }
 
@@ -518,14 +536,28 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
     const { readFile: rf, writeFile: wf } = await import('fs/promises');
     const { existsSync: ex } = await import('fs');
 
-    const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
-    const sourcePath = safePath(projectDir, String(filename));
+    // Write the .docx next to the source it was generated from, so an export
+    // of a per-phase file doesn't land in the flat dir where /files (and the
+    // download URL below) would then disagree about where it lives.
+    const dirs = projectOutputDirs(workspaceDir, project);
+    let sourcePath: string | null = null;
+    let projectDir = projectOutputDir(workspaceDir, project);
+    let traversalBlocked = dirs.length > 0;
+    for (const dir of dirs) {
+      const candidate = safePath(dir, String(filename));
+      if (!candidate) continue;
+      traversalBlocked = false;
+      if (ex(candidate)) {
+        sourcePath = candidate;
+        projectDir = dir;
+        break;
+      }
+    }
 
-    if (!sourcePath) {
+    if (traversalBlocked) {
       return res.status(403).json({ error: 'Path traversal blocked' });
     }
-    if (!ex(sourcePath)) {
+    if (!sourcePath) {
       return res.status(404).json({ error: 'Source file not found' });
     }
 
@@ -556,16 +588,24 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const { join: j } = await import('path');
-    const { readdir: rd, readFile: rf, writeFile: wf } = await import('fs/promises');
+    const { readFile: rf, writeFile: wf, mkdir: mkdirp } = await import('fs/promises');
     const { existsSync: ex } = await import('fs');
 
-    const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
+    const projectSlug = slugify(project.title);
+    // Sources come from BOTH the per-phase and legacy dirs (ALP-1548); the
+    // compiled result is written to the per-phase dir, alongside the
+    // manuscript.md that assembly writes.
+    const outputFiles = listProjectOutputFiles(workspaceDir, project);
+    const pathByName = new Map(outputFiles.map((f) => [f.name, f.path]));
+    /** Read path for an output filename, wherever it actually lives. */
+    const pathFor = (name: string) => pathByName.get(name) ?? j(projectOutputDir(workspaceDir, project), name);
+    const projectDir = projectOutputDir(workspaceDir, project);
 
-    if (!ex(projectDir)) return res.status(404).json({ error: 'No project files found' });
+    if (!outputFiles.length) return res.status(404).json({ error: 'No project files found' });
 
     try {
-      const entries = await rd(projectDir);
+      const entries = outputFiles.map((f) => f.name);
+      await mkdirp(projectDir, { recursive: true });
       const sectionContents: string[] = [];
       const isChapterProject = project.type === 'book-production' || project.type === 'novel-pipeline';
       const isDeepRevision = project.type === 'deep-revision';
@@ -580,8 +620,7 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
         const finalApplyStep = applySteps[applySteps.length - 1];
 
         if (finalApplyStep) {
-          const expectedFile = `${(finalApplyStep as any).id}-${(finalApplyStep as any).label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-          const fullPath = j(projectDir, expectedFile);
+          const fullPath = resolveStepOutputPath(workspaceDir, project, finalApplyStep as any);
           if (ex(fullPath)) {
             const raw = await rf(fullPath, 'utf-8');
             // Strip the leading "# <label>" heading we saved with so downstream doesn't double-wrap it.
@@ -598,8 +637,7 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
         if (analysisSteps.length > 0) {
           const reportSections: string[] = [];
           for (const as of analysisSteps) {
-            const filename = `${(as as any).id}-${(as as any).label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-            const fullPath = j(projectDir, filename);
+            const fullPath = resolveStepOutputPath(workspaceDir, project, as as any);
             if (ex(fullPath)) {
               const raw = await rf(fullPath, 'utf-8');
               reportSections.push(raw.startsWith('# ') ? raw : `## ${as.label}\n\n${raw}`);
@@ -653,8 +691,7 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
           .sort((a: any, b: any) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
 
         for (const ws of writingSteps) {
-          const expectedFile = `${(ws as any).id}-${(ws as any).label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-          const fullPath = j(projectDir, expectedFile);
+          const fullPath = resolveStepOutputPath(workspaceDir, project, ws as any);
           if (ex(fullPath)) {
             const raw = await rf(fullPath, 'utf-8');
             const content = raw.replace(/^# .+\n\n/, '');
@@ -672,7 +709,7 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
               return numA - numB;
             });
           for (const cf of chapterFiles) {
-            const raw = await rf(j(projectDir, cf), 'utf-8');
+            const raw = await rf(pathFor(cf), 'utf-8');
             const content = raw.replace(/^# .+\n\n/, '');
             const chNum = parseInt(cf.match(/chapter-(\d+)/)?.[1] || '0');
             sectionContents.push(`## Chapter ${chNum}\n\n${content}`);
@@ -694,7 +731,7 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
         // First: collect files that match completed steps (preserves step order)
         const usedFiles = new Set<string>();
         for (const cs of completedSteps) {
-          const fullPath = j(projectDir, cs.filename);
+          const fullPath = pathFor(cs.filename);
           if (ex(fullPath)) {
             const raw = await rf(fullPath, 'utf-8');
             sectionContents.push(raw.startsWith('# ') ? raw : `## ${cs.label}\n\n${raw}`);
@@ -707,7 +744,7 @@ export function registerDocumentRoutes(ctx: ApiContext): void {
           .filter(f => f.endsWith('.md') && !usedFiles.has(f) && f !== 'manuscript.md' && f !== 'compiled-output.md')
           .sort();
         for (const mf of remainingMd) {
-          const raw = await rf(j(projectDir, mf), 'utf-8');
+          const raw = await rf(pathFor(mf), 'utf-8');
           sectionContents.push(raw);
           usedFiles.add(mf);
         }

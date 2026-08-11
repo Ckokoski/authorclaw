@@ -9,7 +9,7 @@ import path from 'path';
 import { safePath, gatherChapters } from '../context.js';
 
 export function registerExternalCoversRoutes(ctx: ApiContext): void {
-  const { app, gateway, services, baseDir } = ctx;
+  const { app, gateway, services, baseDir, workspaceDir } = ctx;
 
   // ═══════════════════════════════════════════════════════════
   // External Tool Wrappers — sibling Python apps in ../Automations/
@@ -23,7 +23,7 @@ export function registerExternalCoversRoutes(ctx: ApiContext): void {
     const project = engine?.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     if (chapters.length === 0) {
       return res.status(400).json({ error: 'No completed chapters found.' });
     }
@@ -47,7 +47,7 @@ export function registerExternalCoversRoutes(ctx: ApiContext): void {
     }
 
     // Compile the manuscript first so Format Pro has an input file.
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     if (chapters.length === 0) return res.status(400).json({ error: 'No completed chapters to format.' });
 
     const { join: j, resolve: r } = await import('path');

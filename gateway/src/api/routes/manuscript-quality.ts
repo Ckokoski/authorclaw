@@ -9,7 +9,7 @@ import path from 'path';
 import { safePath, gatherChapters } from '../context.js';
 
 export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
-  const { app, gateway, services, baseDir } = ctx;
+  const { app, gateway, services, baseDir, workspaceDir } = ctx;
 
   // ═══════════════════════════════════════════════════════════
   // Manuscript Hub — aggregated dashboard stats
@@ -56,7 +56,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     const project = engine?.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     if (chapters.length === 0) {
       return res.status(400).json({ error: 'No completed chapters found. Write some chapters first.' });
     }
@@ -121,7 +121,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     const project = engine?.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     if (chapters.length === 0) {
       return res.status(400).json({ error: 'No completed chapters found.' });
     }
@@ -310,7 +310,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     const project = engine?.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     if (chapters.length === 0) return res.status(400).json({ error: 'No completed chapters found.' });
     try {
       const report = critic.analyze(project.id, chapters);
@@ -329,7 +329,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     const project = engine?.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     if (chapters.length === 0) return res.status(400).json({ error: 'No completed chapters found.' });
 
     const combined = chapters.map(c => `# Chapter ${c.number}: ${c.title}\n\n${c.text}`).join('\n\n');
@@ -345,7 +345,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     const project = engine?.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     const combined = chapters.map(c => c.text).join('\n\n');
     try {
       const ctx = await ctxEngine.loadContext(req.params.id);
@@ -365,7 +365,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const aiDisclosed = !!(project as any).aiNarrationDisclosed || !!req.body?.aiNarrationDisclosed;
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     if (chapters.length === 0) return res.status(400).json({ error: 'No completed chapters found.' });
     try {
       const ctx = await ctxEngine.loadContext(req.params.id);
@@ -423,7 +423,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
         customVoices: req.body?.customVoices || {},
       });
 
-      const chapters = await gatherChapters(baseDir, project);
+      const chapters = await gatherChapters(workspaceDir, project);
       if (chapters.length === 0) return res.status(400).json({ error: 'No completed chapters found.' });
 
       const targetCh = req.body?.chapterNumber;
@@ -472,7 +472,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     const project = engine?.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const chapters = await gatherChapters(baseDir, project);
+    const chapters = await gatherChapters(workspaceDir, project);
     if (chapters.length === 0) return res.status(400).json({ error: 'No completed chapters found.' });
     const combined = chapters.map(c => c.text).join('\n\n');
     try {
@@ -596,7 +596,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     let chapterText: string | undefined =
       typeof req.body?.chapterText === 'string' ? req.body.chapterText : undefined;
     if (!chapterText) {
-      const chapters = await gatherChapters(baseDir, project);
+      const chapters = await gatherChapters(workspaceDir, project);
       if (chapters.length === 0) {
         return res.status(400).json({ error: 'No chapterText provided and no completed chapters found.' });
       }
@@ -791,7 +791,7 @@ export function registerManuscriptQualityRoutes(ctx: ApiContext): void {
     let chapterText: string | undefined =
       typeof req.body?.chapterText === 'string' ? req.body.chapterText : undefined;
     if (!chapterText) {
-      const chapters = await gatherChapters(baseDir, project);
+      const chapters = await gatherChapters(workspaceDir, project);
       if (chapters.length === 0) {
         return res.status(400).json({ error: 'No chapterText provided and no completed chapters found.' });
       }
