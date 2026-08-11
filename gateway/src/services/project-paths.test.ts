@@ -11,6 +11,8 @@ import {
   legacyStepOutputFileName,
   resolveStepArtifactDir,
   resolveStepOutputPath,
+  projectOutputDirs,
+  listProjectOutputFiles,
 } from './project-paths.js';
 
 const endsWith = (p: string, tail: string) => p.endsWith(tail) || p.endsWith(tail.replace(/\//g, '\\'));
@@ -154,5 +156,52 @@ describe('resolveStepOutputPath (ALP-1548 trailing-dash filenames)', () => {
     const currentPath = join(phaseDir, stepOutputFileName(dashStep));
     writeFileSync(currentPath, '# current');
     expect(resolveStepOutputPath(root, project, dashStep)).toBe(currentPath);
+  });
+});
+
+describe('projectOutputDirs / listProjectOutputFiles (ALP-1548 consumers)', () => {
+  const project = { title: 'My Novel', type: 'book-production', pipelinePhase: 3 };
+  let root: string;
+
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'alp1548-')); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+  const phaseDir = () => projectOutputDir(root, project);
+  const legacyDir = () => legacyProjectOutputDir(root, project);
+
+  it('returns only dirs that exist, per-phase first', () => {
+    expect(projectOutputDirs(root, project)).toEqual([]);
+    mkdirSync(legacyDir(), { recursive: true });
+    expect(projectOutputDirs(root, project)).toEqual([legacyDir()]);
+    mkdirSync(phaseDir(), { recursive: true });
+    expect(projectOutputDirs(root, project)).toEqual([phaseDir(), legacyDir()]);
+  });
+
+  // The exact regression: /files listed the flat dir and skipped non-files, so
+  // everything written into the per-phase subfolder became invisible.
+  it('lists per-phase outputs that a flat-dir-only listing would miss', () => {
+    mkdirSync(phaseDir(), { recursive: true });
+    writeFileSync(join(legacyDir(), 'project-9-step-1-old.md'), 'old');
+    writeFileSync(join(phaseDir(), 'project-18-step-2-new.md'), 'new');
+    writeFileSync(join(phaseDir(), 'manuscript.md'), 'assembled');
+
+    const names = listProjectOutputFiles(root, project).map((f) => f.name).sort();
+    expect(names).toEqual(['manuscript.md', 'project-18-step-2-new.md', 'project-9-step-1-old.md']);
+  });
+
+  it('never returns the phase dir itself as a file of the flat dir', () => {
+    mkdirSync(phaseDir(), { recursive: true });
+    writeFileSync(join(legacyDir(), 'a.md'), 'a');
+    const names = listProjectOutputFiles(root, project).map((f) => f.name);
+    expect(names).toEqual(['a.md']);
+  });
+
+  it('prefers the per-phase copy when a filename exists in both dirs', () => {
+    mkdirSync(phaseDir(), { recursive: true });
+    writeFileSync(join(legacyDir(), 'manuscript.md'), 'stale');
+    writeFileSync(join(phaseDir(), 'manuscript.md'), 'current');
+    const hit = listProjectOutputFiles(root, project).filter((f) => f.name === 'manuscript.md');
+    expect(hit).toHaveLength(1);
+    expect(readFileSync(hit[0].path, 'utf-8')).toBe('current');
   });
 });

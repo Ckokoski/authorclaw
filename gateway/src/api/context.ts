@@ -167,13 +167,10 @@ export function addWaveDisclaimer(res: Response): void {
  * Used across external-tools, beta-reader/dialogue-auditor, craft critic,
  * audiobook prep, and style-clone routes.
  */
-export async function gatherChapters(baseDir: string, project: any): Promise<Array<{ id: string; number: number; title: string; text: string }>> {
-  const { join: j } = await import('path');
+export async function gatherChapters(workspaceDir: string, project: any): Promise<Array<{ id: string; number: number; title: string; text: string }>> {
   const { readFile: rf } = await import('fs/promises');
   const { existsSync: ex } = await import('fs');
-
-  const projectSlug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const projectDir = j(baseDir, 'workspace', 'projects', projectSlug);
+  const { resolveStepOutputPath } = await import('../services/project-paths.js');
 
   const writingSteps = project.steps
     .filter((s: any) => (s.phase === 'writing' || s.label?.toLowerCase().includes('chapter')) && s.status === 'completed')
@@ -182,10 +179,11 @@ export async function gatherChapters(baseDir: string, project: any): Promise<Arr
   const chapters: Array<{ id: string; number: number; title: string; text: string }> = [];
   for (const ws of writingSteps) {
     let text = ws.result || '';
-    // If no inline result, try reading from disk.
-    if (!text && ex(projectDir)) {
-      const expectedFile = `${ws.id}-${ws.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-      const fullPath = j(projectDir, expectedFile);
+    // If no inline result, try reading from disk. Goes through the shared
+    // resolver (ALP-1548) so it finds outputs in the per-phase dir as well as
+    // the legacy flat one — this used to re-derive the flat path itself.
+    if (!text) {
+      const fullPath = resolveStepOutputPath(workspaceDir, project, ws);
       if (ex(fullPath)) {
         const raw = await rf(fullPath, 'utf-8');
         text = raw.replace(/^# .+\n\n/, '');
