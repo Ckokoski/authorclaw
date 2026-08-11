@@ -83,6 +83,21 @@ export function safeResolveWithin(baseDir: string, ...segments: string[]): strin
 }
 
 /**
+ * True if `target` resolves to a location inside (or equal to) `baseDir`.
+ * Unlike resolveWithin, this doesn't restrict how target was formed and never
+ * throws — used to validate two independently-supplied absolute paths (e.g.
+ * confirming a workspace dir actually sits inside a configured git repo root).
+ */
+export function isWithin(baseDir: string, target: string): boolean {
+  const base = resolve(baseDir);
+  const targetResolved = resolve(target);
+  const baseCmp = normalizeForCompare(base);
+  const targetCmp = normalizeForCompare(targetResolved);
+  const baseWithSep = baseCmp.endsWith(sep) ? baseCmp : baseCmp + sep;
+  return targetCmp === baseCmp || targetCmp.startsWith(baseWithSep);
+}
+
+/**
  * Sanitize a single path segment (a filename or a single directory name) so it
  * is safe to use as a leaf component. This does NOT permit sub-paths — every
  * separator is stripped. Use for filenames coming from user input.

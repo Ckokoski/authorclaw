@@ -455,6 +455,8 @@ export function registerSystemRoutes(ctx: ApiContext): void {
       'ai.openrouter.model',
       'ai.claude-cli.enabled', 'ai.claude-cli.binPath',
       'bridges.telegram.enabled', 'bridges.telegram.pairingEnabled',
+      'workspaceGit.enabled', 'workspaceGit.repoRoot',
+      'workspaceGit.syncIntervalMinutes', 'workspaceGit.autoMergeEnabled',
     ];
     if (!safePaths.includes(path)) {
       return res.status(403).json({ error: 'Config path not allowed' });

@@ -26,6 +26,38 @@ with `--allow-dirty`.
 | Manuscripts | `/volume1/docker/authoragent/workspace` |
 | Credential vault | `/volume1/docker/authoragent/vault` |
 
+## Workspace git connection (optional)
+
+The Connections tab can connect the manuscript workspace to a GitHub repo
+(commit/push/PR/merge — see `gateway/src/services/workspace-git-sync.ts`).
+That service needs a git repo ROOT that CONTAINS the workspace dir as a
+subdirectory (mirroring how a local checkout has `alpha-press` as the repo
+root and `books/authoragent-workspace` underneath it). The NAS only
+bind-mounts `/app/workspace` and `/app/config/.vault` (see the `volumes:` in
+`docker-compose.yml` above) — nothing above `/app/workspace` survives a
+redeploy, so there's nowhere for a `.git` directory to live if the workspace
+dir itself is the mount root.
+
+Don't add a new bind mount for this (Synology ACL provisioning pain, see
+"Things that bite on this host" below). Instead, run the existing multi-book
+migration **once**, before connecting a repo:
+
+```bash
+ssh alpha-nas-lan 'docker exec authoragent npm run book -- migrate-legacy manuscript'
+```
+
+This moves the current flat `memory/`/`soul/`/`projects/`/etc. into
+`/app/workspace/manuscript/` and writes `.active-book`. After that, the
+already-persisted `/app/workspace` mount IS the git repo root, and
+`/app/workspace/manuscript` is the workspace subdirectory — connect the
+Connections tab's repo root field to `/app/workspace` (not `.../manuscript`).
+Zero `docker-compose.yml` / `deploy-nas.sh` changes needed.
+
+This is a live-instance operation — run it deliberately, not as part of a
+routine deploy, and only once (running it again on an already-migrated
+workspace is a no-op per `migrateLegacyWorkspace`'s backward-compat design,
+but there's no reason to run it twice).
+
 Read the generated login on the NAS — never copy it into a ticket or comment
 (ALP-1009):
 

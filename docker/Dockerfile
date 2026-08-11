@@ -25,6 +25,12 @@ RUN npm prune --omit=dev
 # ── Production Image ──
 FROM node:22-slim
 
+# git + ca-certificates: needed for the optional workspace git connection
+# (gateway/src/services/workspace-git-sync.ts) to clone/commit/push over
+# HTTPS. node:22-slim ships neither.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 # Security: Create non-root user
 RUN groupadd -r authorclaw && \
     useradd -r -g authorclaw -d /app -s /sbin/nologin authorclaw

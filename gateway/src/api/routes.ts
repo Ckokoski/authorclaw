@@ -50,6 +50,7 @@ import { registerWebsiteRoutes } from './routes/website.js';
 import { registerReaderPanelRoutes } from './routes/reader-panel.js';
 import { registerReaderFeedbackRoutes } from './routes/reader-feedback.js';
 import { registerReviewRoutes } from './routes/review.js';
+import { registerWorkspaceGitRoutes } from './routes/workspace-git.js';
 
 export function createAPIRoutes(app: Application, gateway: any, rootDir?: string, workspaceDir?: string): void {
   const ctx = createApiContext(app, gateway, rootDir, workspaceDir);
@@ -85,4 +86,5 @@ export function createAPIRoutes(app: Application, gateway: any, rootDir?: string
   registerReaderPanelRoutes(ctx);
   registerReaderFeedbackRoutes(ctx);
   registerReviewRoutes(ctx);
+  registerWorkspaceGitRoutes(ctx);
 }

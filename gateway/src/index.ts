@@ -59,6 +59,7 @@ import { CharacterVoicesService } from './services/character-voices.js';
 import { WebsiteSiteService } from './services/website-sites.js';
 import { BlogPostDrafterService } from './services/blog-post-drafter.js';
 import { WebsiteDeployService } from './services/website-deploy.js';
+import { WorkspaceGitSyncService, WORKSPACE_GIT_SYNC_HANDLER } from './services/workspace-git-sync.js';
 import { LessonStore } from './services/lessons.js';
 import { PreferenceStore } from './services/preferences.js';
 import { OrchestratorService } from './services/orchestrator.js';
@@ -230,6 +231,8 @@ class AuthorAgentGateway {
   private set blogPostDrafter(v: BlogPostDrafterService) { this.services.blogPostDrafter = v; }
   private get websiteDeploy(): WebsiteDeployService { return this.services.websiteDeploy; }
   private set websiteDeploy(v: WebsiteDeployService) { this.services.websiteDeploy = v; }
+  private get workspaceGitSync(): WorkspaceGitSyncService { return this.services.workspaceGitSync; }
+  private set workspaceGitSync(v: WorkspaceGitSyncService) { this.services.workspaceGitSync = v; }
   private get lessons(): LessonStore { return this.services.lessons; }
   private set lessons(v: LessonStore) { this.services.lessons = v; }
   private get preferences(): PreferenceStore { return this.services.preferences; }
@@ -583,6 +586,12 @@ class AuthorAgentGateway {
     // ── Phase 6g3: Cron Scheduler (Hermes-inspired) ──
     this.cronScheduler = new CronSchedulerService(WORKSPACE_DIR);
     await this.cronScheduler.initialize();
+
+    // Optional git-repo connection for the manuscript workspace (Connections
+    // tab). Stateless until connect()/syncNow() are called — safe to
+    // construct unconditionally even when never configured.
+    this.workspaceGitSync = new WorkspaceGitSyncService(WORKSPACE_DIR);
+    this.workspaceGitSync.setServices(this.vault, this.config, this.cronScheduler);
     // Register built-in handlers — user-created jobs reference these by name.
     this.cronScheduler.registerHandler('reindex-memory-search', async () => {
       if (!this.memorySearch?.isAvailable()) return { success: false, message: 'Search unavailable' };
@@ -618,6 +627,17 @@ class AuthorAgentGateway {
     // Skill curation (Skill Curator, Hermes-pattern). The SkillCuratorService is
     // built later in initialize() (Phase 6g4b), so this handler reads it lazily
     // and guards on it being ready — mirrors the sleep-consolidation handler.
+    // Workspace git sync — no-op if the user hasn't connected a repo. Unlike
+    // sleep-consolidation/skill-curation, no default job is auto-seeded at
+    // boot: connect() creates its own job idempotently once a repo is
+    // actually configured (see workspace-git-sync.ts).
+    this.cronScheduler.registerHandler(WORKSPACE_GIT_SYNC_HANDLER, async () => {
+      const status = await this.workspaceGitSync.getStatus();
+      if (!status.enabled || !status.configured) {
+        return { success: true, message: 'Workspace git sync not configured — skipped' };
+      }
+      return this.workspaceGitSync.syncNow();
+    });
     this.cronScheduler.registerHandler('skill-curation', async (payload) => {
       if (!this.skillCurator) return { success: false, message: 'Skill curator not initialized' };
       try {

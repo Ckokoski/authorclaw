@@ -83,6 +83,7 @@ import { ReleaseCalendarService } from './release-calendar.js';
 import { ReaderIntelService } from './reader-intel.js';
 import { TranslationPipelineService } from './translation-pipeline.js';
 import { WebsiteBuilderService } from './website-builder.js';
+import { WorkspaceGitSyncService } from './workspace-git-sync.js';
 
 /**
  * Shape of the object the gateway's getServices() returns to the API routes.
@@ -152,6 +153,7 @@ export interface GatewayServices {
   readerIntel: ReaderIntelService;
   translationPipeline: TranslationPipelineService;
   websiteBuilder: WebsiteBuilderService;
+  workspaceGitSync: WorkspaceGitSyncService;
 }
 
 /**
@@ -235,6 +237,7 @@ export class ServiceContainer {
   readerIntel!: ReaderIntelService;
   translationPipeline!: TranslationPipelineService;
   websiteBuilder!: WebsiteBuilderService;
+  workspaceGitSync!: WorkspaceGitSyncService;
 
   /**
    * The object exposed to API routes. Identical keys/order to the former
@@ -305,6 +308,7 @@ export class ServiceContainer {
       readerIntel: this.readerIntel,
       translationPipeline: this.translationPipeline,
       websiteBuilder: this.websiteBuilder,
+      workspaceGitSync: this.workspaceGitSync,
     };
   }
 }

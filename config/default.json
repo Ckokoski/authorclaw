@@ -82,5 +82,11 @@
     "discord": {
       "enabled": false
     }
+  },
+  "workspaceGit": {
+    "enabled": false,
+    "repoRoot": "",
+    "syncIntervalMinutes": 30,
+    "autoMergeEnabled": true
   }
 }

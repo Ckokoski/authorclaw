@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { basename, join, resolve, sep } from 'path';
-import { resolveWithin, safeResolveWithin, sanitizeSegment } from './paths.js';
+import { resolveWithin, safeResolveWithin, sanitizeSegment, isWithin } from './paths.js';
 
 describe('resolveWithin', () => {
   const base = resolve('workspace', 'project');
@@ -197,5 +197,35 @@ describe('sanitizeSegment', () => {
     expect(sanitizeSegment(null)).toBe('file');
     // @ts-expect-error intentional bad input for runtime guard test
     expect(sanitizeSegment(undefined)).toBe('file');
+  });
+});
+
+describe('isWithin', () => {
+  const base = resolve('repo-root');
+
+  it('is true for a direct child', () => {
+    expect(isWithin(base, join(base, 'books', 'workspace'))).toBe(true);
+  });
+
+  it('is true for the base itself', () => {
+    expect(isWithin(base, base)).toBe(true);
+  });
+
+  it('is false for a sibling directory', () => {
+    expect(isWithin(base, resolve('repo-root-sibling'))).toBe(false);
+  });
+
+  it('is false for the parent of the base', () => {
+    expect(isWithin(base, resolve('.'))).toBe(false);
+  });
+
+  it('is false for a directory that merely shares a name prefix', () => {
+    // "repo-root-2" starts with "repo-root" as a string but is not inside it.
+    expect(isWithin(base, resolve('repo-root-2', 'sub'))).toBe(false);
+  });
+
+  it('normalizes mixed separators the same way resolveWithin does', () => {
+    const target = base + '\\books\\workspace';
+    expect(isWithin(base, target)).toBe(true);
   });
 });

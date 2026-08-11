@@ -93,6 +93,13 @@ export function validateKeyFormat(keyName: string, value: string): { ok: boolean
       return { ok: true };
     }
 
+    case 'git_pat': {
+      if (!/^(github_pat_|ghp_)/.test(value)) {
+        return { ok: false, warning: 'GitHub personal access tokens usually start with "github_pat_" (fine-grained) or "ghp_" (classic). Double-check this is the right value.' };
+      }
+      return { ok: true };
+    }
+
     default:
       return { ok: true };
   }

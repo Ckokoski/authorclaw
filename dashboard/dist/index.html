@@ -1553,6 +1553,34 @@ textarea { resize: vertical; min-height: 60px; }
         <button class="success" id="btnSaveGlobalImageProvider">Save Image Provider</button>
       </div>
 
+      <!-- Manuscript Git Repository (optional workspace sync) -->
+      <div class="card" id="workspaceGitCard">
+        <div class="card-title">Manuscript Git Repository (optional)</div>
+        <p class="hint" style="margin-bottom:12px;">Connect this workspace to a GitHub repo so changes made here merge automatically via pull request. Git history is your rollback safety net — nothing here is required for AuthorAgent to work.</p>
+        <div id="workspaceGitStatus" style="margin-bottom:12px;font-size:14px;color:var(--muted);">Loading...</div>
+        <div id="workspaceGitBanner" style="display:none;margin-bottom:12px;padding:10px;border-radius:6px;background:#fef3c7;border-left:4px solid var(--warn);color:#78350f;font-size:13px;"></div>
+        <div class="form-group-inline">
+          <div class="form-group">
+            <label>Repo URL</label>
+            <input type="text" id="gitRepoUrl" placeholder="https://github.com/owner/repo.git">
+          </div>
+          <div class="form-group">
+            <label>Personal Access Token</label>
+            <input type="password" id="gitPat" placeholder="github_pat_...">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Repo root (local path)</label>
+          <input type="text" id="gitRepoRoot" placeholder="e.g. D:\Projects\alpha-press, or /app/workspace on the NAS">
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="success" id="btnConnectGit">Connect</button>
+          <button class="secondary" id="btnTestGit">Test</button>
+          <button class="secondary" id="btnSyncNowGit">Sync now</button>
+          <button class="danger" id="btnDisconnectGit">Disconnect</button>
+        </div>
+      </div>
+
       </div><!-- /settingsTabConnections -->
 
       <!-- ============ TAB: Integrations ============ -->
@@ -1927,6 +1955,7 @@ function loadSettingsConnections() {
   loadOpenrouterConfig();
   loadGlobalProvider();
   loadGlobalImageProvider();
+  loadWorkspaceGitStatus();
 }
 
 function loadSettingsIntegrations() {
@@ -4889,6 +4918,80 @@ document.getElementById('btnDisconnectTelegram').addEventListener('click', funct
   api('POST', '/api/telegram/disconnect').then(function() {
     showToast('Telegram disconnected', 'info');
     loadTelegramStatus();
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
+
+// ── Workspace Git Sync ──
+function loadWorkspaceGitStatus() {
+  api('GET', '/api/workspace-git/status').then(function(data) {
+    var el = document.getElementById('workspaceGitStatus');
+    var banner = document.getElementById('workspaceGitBanner');
+    if (!data.configured) {
+      el.innerHTML = '<span style="color:var(--muted);">Not configured</span>';
+    } else {
+      var parts = [];
+      parts.push('<span style="color:' + (data.enabled ? 'var(--success)' : 'var(--muted)') + ';font-weight:700;">' + (data.enabled ? 'Connected' : 'Connected (paused)') + '</span>');
+      parts.push(escapeHtml(data.repoUrlSanitized || ''));
+      if (data.isGitRepo) {
+        parts.push(data.ahead + ' ahead / ' + data.behind + ' behind');
+        parts.push(data.dirtyFileCount + ' dirty file(s)');
+      }
+      if (data.lastSyncAt) {
+        parts.push('last sync: ' + formatDate(data.lastSyncAt) + ' (' + (data.lastSyncStatus || 'unknown') + ')');
+      }
+      if (data.syncInProgress) parts.push('<span style="color:var(--accent);">syncing now...</span>');
+      el.innerHTML = parts.join(' &middot; ');
+    }
+    if (data.lastSyncStatus === 'needs-manual-resolution') {
+      banner.style.display = 'block';
+      banner.innerHTML = 'Last sync needs manual resolution: ' + escapeHtml(data.lastSyncMessage || '') +
+        (data.openPrUrl ? ' <a href="' + data.openPrUrl + '" target="_blank" rel="noopener">Open PR &rarr;</a>' : '');
+    } else {
+      banner.style.display = 'none';
+    }
+  }).catch(function() {
+    document.getElementById('workspaceGitStatus').innerHTML = '<span style="color:var(--muted);">Could not load</span>';
+  });
+}
+
+document.getElementById('btnConnectGit').addEventListener('click', function() {
+  var repoUrl = document.getElementById('gitRepoUrl').value.trim();
+  var pat = document.getElementById('gitPat').value.trim();
+  var repoRoot = document.getElementById('gitRepoRoot').value.trim();
+  if (!repoUrl || !pat || !repoRoot) {
+    showToast('Repo URL, token, and repo root are all required', 'error');
+    return;
+  }
+  api('POST', '/api/workspace-git/connect', { repoUrl: repoUrl, pat: pat, repoRoot: repoRoot }).then(function() {
+    showToast('Workspace git connected', 'success');
+    document.getElementById('gitPat').value = '';
+    loadWorkspaceGitStatus();
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
+
+document.getElementById('btnTestGit').addEventListener('click', function() {
+  api('POST', '/api/workspace-git/test').then(function(data) {
+    showToast(data.message, data.ok ? 'success' : 'error');
+  }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
+});
+
+document.getElementById('btnSyncNowGit').addEventListener('click', function() {
+  var btn = document.getElementById('btnSyncNowGit');
+  btn.disabled = true;
+  api('POST', '/api/workspace-git/sync-now').then(function(data) {
+    showToast(data.message, data.success ? 'success' : 'error');
+    loadWorkspaceGitStatus();
+  }).catch(function(e) {
+    showToast('Failed: ' + e.message, 'error');
+  }).then(function() {
+    btn.disabled = false;
+  });
+});
+
+document.getElementById('btnDisconnectGit').addEventListener('click', function() {
+  api('POST', '/api/workspace-git/disconnect').then(function() {
+    showToast('Workspace git sync paused', 'info');
+    loadWorkspaceGitStatus();
   }).catch(function(e) { showToast('Failed: ' + e.message, 'error'); });
 });
 
