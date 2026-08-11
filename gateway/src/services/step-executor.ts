@@ -21,6 +21,7 @@ import type { ContextEngine } from './context-engine.js';
 import { generateDocxBuffer } from './docx-export.js';
 import { logger } from './logger.js';
 import { docVersionService } from './doc-versions.js';
+import { projectOutputDir, stepOutputFileName, resolveStepArtifactDir, resolveStepOutputPath } from './project-paths.js';
 import { listComments, formatOpenCommentsForAgent } from './comments.js';
 import { resolveStepGate } from './project-templates.js';
 import type {
@@ -368,7 +369,10 @@ export class StepExecutor {
     if (step.status !== 'awaiting_review') return { ok: false, kind: 'not-awaiting-review' };
 
     const { join } = await import('path');
-    const projectDir = join(workspaceDir, 'projects', project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+    // Per-phase dir (ALP-1548), falling back to the legacy flat dir when this
+    // step's existing versions/comments live there — a revision must append to
+    // the same chain the executor wrote, not start a fresh one next door.
+    const projectDir = resolveStepArtifactDir(workspaceDir, project, step);
 
     // Structured comments (M2.3 — ALP-1565) ride alongside the free-text
     // feedback field — open ones only, so a resolved comment stops nagging
@@ -410,10 +414,9 @@ export class StepExecutor {
 
       const { mkdir, writeFile } = await import('fs/promises');
       await mkdir(projectDir, { recursive: true });
-      const stepFileName = `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
       const stepContent = `# ${step.label}\n\n${response}`;
       const version = await docVersionService.appendVersion(projectDir, step.id, stepContent, 'agent-patch', 'Revised from reviewer feedback');
-      await writeFile(join(projectDir, stepFileName), stepContent, 'utf-8');
+      await writeFile(resolveStepOutputPath(workspaceDir, project, step), stepContent, 'utf-8');
 
       // openStepGate re-runs applyStepCompletion — since the step's phase is
       // still gated, this puts it right back into awaiting_review with a fresh
@@ -826,9 +829,9 @@ export class StepExecutor {
 
       // Save to file + append immutable version
       try {
-        const projectDir = join(workspaceDir, 'projects', currentProject.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'));
+        const projectDir = projectOutputDir(workspaceDir, currentProject);
         await mkdir(projectDir, { recursive: true });
-        const stepFileName = `${activeStep.id}-${activeStep.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+        const stepFileName = stepOutputFileName(activeStep);
         const canonicalPath = join(projectDir, stepFileName);
         const stepContent = `# ${activeStep.label}\n\n${response}`;
 
@@ -978,8 +981,7 @@ export class StepExecutor {
         try {
           const { existsSync: exLocal } = await import('fs');
           const { readFile: readF } = await import('fs/promises');
-          const projectSlug = currentProject.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-          const projectDir = join(workspaceDir, 'projects', projectSlug);
+          const projectDir = projectOutputDir(workspaceDir, currentProject);
 
           const writingSteps = currentProject.steps
             .filter((s: any) => s.phase === 'writing' && s.status === 'completed')
@@ -987,8 +989,7 @@ export class StepExecutor {
 
           const chapterContents: string[] = [];
           for (const ws of writingSteps) {
-            const expectedFile = `${(ws as any).id}-${(ws as any).label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
-            const fullPath = join(projectDir, expectedFile);
+            const fullPath = resolveStepOutputPath(workspaceDir, currentProject, ws);
             if (exLocal(fullPath)) {
               const raw = await readF(fullPath, 'utf-8');
               const content = raw.replace(/^# .+\n\n/, '');

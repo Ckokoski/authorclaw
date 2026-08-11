@@ -10,7 +10,6 @@
  * curl-exercisable end to end).
  */
 import { Request, Response } from 'express';
-import { join } from 'path';
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import type { ApiContext } from '../context.js';
@@ -18,16 +17,16 @@ import { docVersionService } from '../../services/doc-versions.js';
 import { computeTransitiveDependents } from '../../services/dependency-graph.js';
 import { addComment, listComments, setCommentStatus, CommentValidationError } from '../../services/comments.js';
 import type { Project, ProjectStep } from '../../services/project-templates.js';
+import { resolveStepArtifactDir, resolveStepOutputPath } from '../../services/project-paths.js';
 
-/** Same slugification `step-executor.ts` uses for the on-disk project directory. */
-function projectDirFor(workspaceDir: string, project: Project): string {
-  const slug = project.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  return join(workspaceDir, 'projects', slug);
-}
-
-/** Same slugification `step-executor.ts` uses for a step's canonical pointer file. */
-function stepFileNameFor(step: ProjectStep): string {
-  return `${step.id}-${step.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`;
+/**
+ * Where a step's artifacts actually live (ALP-1548: per-phase subfolder, with
+ * a legacy flat-dir fallback). Shared with the writer via project-paths.ts —
+ * this file used to re-derive the flat path itself, which broke every review
+ * route the moment the executor started writing per-phase.
+ */
+function projectDirFor(workspaceDir: string, project: Project, step: ProjectStep): string {
+  return resolveStepArtifactDir(workspaceDir, project, step);
 }
 
 function findStep(project: Project, stepId: unknown): ProjectStep | undefined {
@@ -129,8 +128,8 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     const step = findStep(project, req.params.stepId);
     if (!step) return res.status(404).json({ error: 'Step not found' });
 
-    const projectDir = projectDirFor(workspaceDir, project);
-    const canonicalPath = join(projectDir, stepFileNameFor(step));
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const canonicalPath = resolveStepOutputPath(workspaceDir, project, step);
     const versions = await docVersionService.getVersions(projectDir, step.id, canonicalPath);
     res.json({ stepId: step.id, versions });
   });
@@ -148,7 +147,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: 'Version must be a positive integer' });
     }
 
-    const projectDir = projectDirFor(workspaceDir, project);
+    const projectDir = projectDirFor(workspaceDir, project, step);
     const content = await docVersionService.getVersionContent(projectDir, step.id, versionNumber);
     if (content === null) return res.status(404).json({ error: `Version v${versionNumber} not found` });
     res.json({ stepId: step.id, v: versionNumber, content });
@@ -168,7 +167,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: 'from and to query params must be positive integers' });
     }
 
-    const projectDir = projectDirFor(workspaceDir, project);
+    const projectDir = projectDirFor(workspaceDir, project, step);
     const [fromContent, toContent] = await Promise.all([
       docVersionService.getVersionContent(projectDir, step.id, from),
       docVersionService.getVersionContent(projectDir, step.id, to),
@@ -195,10 +194,10 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     }
 
     const { writeFile, mkdir } = await import('fs/promises');
-    const projectDir = projectDirFor(workspaceDir, project);
+    const projectDir = projectDirFor(workspaceDir, project, step);
     await mkdir(projectDir, { recursive: true });
     const version = await docVersionService.appendVersion(projectDir, step.id, content, 'user', note);
-    await writeFile(join(projectDir, stepFileNameFor(step)), content, 'utf-8');
+    await writeFile(resolveStepOutputPath(workspaceDir, project, step), content, 'utf-8');
 
     const updated = engine.saveStepResult(project.id, step.id, content);
     res.json({ stepId: step.id, version, step: updated });
@@ -216,7 +215,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
     const step = findStep(project, req.params.stepId);
     if (!step) return res.status(404).json({ error: 'Step not found' });
 
-    const projectDir = projectDirFor(workspaceDir, project);
+    const projectDir = projectDirFor(workspaceDir, project, step);
     const comments = await listComments(projectDir, step.id);
     res.json({ stepId: step.id, comments });
   });
@@ -240,8 +239,8 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: 'body (non-empty string) required' });
     }
 
-    const projectDir = projectDirFor(workspaceDir, project);
-    const canonicalPath = join(projectDir, stepFileNameFor(step));
+    const projectDir = projectDirFor(workspaceDir, project, step);
+    const canonicalPath = resolveStepOutputPath(workspaceDir, project, step);
     if (!existsSync(canonicalPath)) {
       return res.status(400).json({ error: 'Step has no content yet to anchor a comment to' });
     }
@@ -284,7 +283,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: 'status must be "open" or "resolved"' });
     }
 
-    const projectDir = projectDirFor(workspaceDir, project);
+    const projectDir = projectDirFor(workspaceDir, project, step);
     const comment = await setCommentStatus(projectDir, step.id, String(req.params.commentId), status);
     if (!comment) return res.status(404).json({ error: 'Comment not found' });
     res.json({ comment });
@@ -305,7 +304,7 @@ export function registerReviewRoutes(ctx: ApiContext): void {
       return res.status(400).json({ error: `Step is "${step.status}", not awaiting_review` });
     }
 
-    const projectDir = projectDirFor(workspaceDir, project);
+    const projectDir = projectDirFor(workspaceDir, project, step);
     const currentVersion = await docVersionService.getCurrentVersion(projectDir, step.id);
     const decided = engine.decideStepGate(project.id, step.id, 'approved', currentVersion);
     res.json({ step: decided, project: engine.getProject(project.id) });

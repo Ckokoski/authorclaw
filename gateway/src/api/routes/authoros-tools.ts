@@ -46,6 +46,12 @@ export function registerAuthorOSToolsRoutes(ctx: ApiContext): void {
         for (const sub of readdirSync(projectsDir, { withFileTypes: true })) {
           if (sub.isDirectory()) {
             searchPaths.push(r(projectsDir, sub.name, inputFile));
+            // Also search per-phase subfolders (ALP-1548).
+            for (const ph of readdirSync(r(projectsDir, sub.name), { withFileTypes: true })) {
+              if (ph.isDirectory()) {
+                searchPaths.push(r(projectsDir, sub.name, ph.name, inputFile));
+              }
+            }
           }
         }
       }
