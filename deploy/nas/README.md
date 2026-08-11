@@ -75,7 +75,8 @@ reopens the hole.
 
 ## Things that bite on this host
 
-Each of these was hit for real while landing ALP-1725:
+Each of these was hit for real — the first five while landing ALP-1725, the
+last one afterwards:
 
 - **`synoacltool` is at `/usr/syno/bin`**, which DSM leaves off the PATH for
   non-interactive ssh. Miss it and the ACL strip is a silent no-op.
@@ -90,6 +91,13 @@ Each of these was hit for real while landing ALP-1725:
   At 640 nginx returns 500 to every request *carrying* credentials while
   requests without any are still challenged 401 — so the front door looks
   healthy and no login works.
+- **A manual `docker stop` used to be permanent.** Both services ran
+  `restart: unless-stopped`, which by design never restarts a container stopped
+  by hand — not on daemon restart, not on reboot. AuthorAgent was stopped on
+  2026-08-08 and stayed down until 08-10, silently: every other NAS stack
+  restarted around it, nothing was unhealthy, it was just absent. Both services
+  are `restart: always` now. Stop it on purpose and expect it back after the
+  next NAS reboot.
 
 ## Recovering a wedged data dir
 
